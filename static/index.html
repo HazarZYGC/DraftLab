@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10130f">
+  <title>DraftLab — NBA Fantasy Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">DL</span><span>DraftLab</span></a>
+    <nav aria-label="Ana menü">
+      <button class="nav-link active" data-view="board">Oyuncu panosu</button>
+      <button class="nav-link" data-view="draft">Draft odası <span id="draftCount" class="count">0</span></button>
+    </nav>
+    <div class="sync-wrap">
+      <span id="syncDot" class="sync-dot"></span>
+      <span id="syncText">Veri kontrol ediliyor</span>
+      <button id="refreshBtn" class="icon-button" title="Verileri yenile" aria-label="Verileri yenile">↻</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="boardView" class="view active">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">NBA FANTASY BOARD</p>
+          <h1>Draft gecesini<br><em>şansa bırakma.</em></h1>
+          <p class="hero-copy">Form, kategori katkısı, mevki kıtlığı ve sakatlık riskini tek bir sade listede gör.</p>
+        </div>
+        <div class="hero-score">
+          <span class="mini-label">MODEL</span>
+          <strong>POINTS</strong>
+          <span>2 sezon · 65/35</span>
+        </div>
+      </div>
+
+      <div id="notice" class="notice hidden"></div>
+
+      <section class="control-bar" aria-label="Filtreler">
+        <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Oyuncu ara…"></label>
+        <div id="positionFilters" class="segmented">
+          <button class="active" data-position="ALL">Tümü</button><button data-position="PG">PG</button>
+          <button data-position="SG">SG</button><button data-position="SF">SF</button>
+          <button data-position="PF">PF</button><button data-position="C">C</button>
+        </div>
+        <label class="select-label">Format
+          <select id="modeSelect"><option value="points" selected>Puan ligi</option><option value="categories">9-Cat H2H</option></select>
+        </label>
+        <label class="select-label">Lig
+          <select id="leagueSelect"><option value="">Demo board</option></select>
+        </label>
+      </section>
+
+      <section class="board-card">
+        <div class="board-heading">
+          <div><span class="mini-label">KONSOLİDE SIRALAMA</span><h2>En değerli oyuncular</h2></div>
+          <span id="playerTotal" class="player-total">— oyuncu</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Oyuncu</th><th>Pos</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>FG%</th><th>FT%</th><th>Risk</th><th>Skor</th></tr></thead>
+            <tbody id="playerRows"></tbody>
+          </table>
+        </div>
+        <div id="emptyState" class="empty hidden">Bu filtreye uyan oyuncu bulunamadı.</div>
+      </section>
+    </section>
+
+    <section id="draftView" class="view">
+      <div id="draftSetup" class="draft-setup">
+        <div class="setup-copy">
+          <p class="eyebrow">CANLI DRAFT YARDIMCISI</p>
+          <h1>Oda hazır.<br><em>Sıra sende.</em></h1>
+          <p>Takım sayısını gir. Sıralamayı kura ile belirleyelim; gerçek draftta yapılan her seçimi burada işaretle.</p>
+        </div>
+        <form id="draftForm" class="setup-card">
+          <span class="setup-number">01</span>
+          <label>Lig kaç takımlı?</label>
+          <div class="team-stepper"><button type="button" id="teamMinus">−</button><strong id="teamCount">10</strong><button type="button" id="teamPlus">+</button></div>
+          <label for="roundCount">Tur sayısı</label>
+          <select id="roundCount"><option>10</option><option selected>13</option><option>15</option></select>
+          <button type="submit" class="primary-button">Kurayı çek ve başlat <span>→</span></button>
+        </form>
+      </div>
+
+      <div id="draftRoom" class="draft-room hidden">
+        <aside class="draft-sidebar">
+          <div class="room-title"><span class="live-dot"></span><div><span class="mini-label">DRAFT CANLI</span><h2 id="pickLabel">1. Tur · 1. Seçim</h2></div></div>
+          <div id="recommendation" class="recommendation"></div>
+          <div class="roster-block"><div class="section-title"><h3>Kadrom</h3><span id="rosterCount">0/13</span></div><div id="myRoster" class="roster-list"></div></div>
+          <button id="resetDraft" class="text-button">Draftı sıfırla</button>
+        </aside>
+        <div class="draft-main">
+          <div class="turn-strip"><span>Şu an seçen</span><strong id="currentTeam">—</strong><div id="orderStrip" class="order-strip"></div></div>
+          <div class="draft-toolbar"><label class="search"><span>⌕</span><input id="draftSearch" type="search" placeholder="Seçilen oyuncuyu ara…"></label><select id="draftPosition"><option value="ALL">Tüm mevkiler</option><option>PG</option><option>SG</option><option>SF</option><option>PF</option><option>C</option></select></div>
+          <div id="draftGrid" class="draft-grid"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
