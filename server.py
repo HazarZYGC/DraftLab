@@ -1,4 +1,4 @@
-"""Dependency-free local server with Yahoo OAuth and live refresh support."""
+"""Dependency-free server for ESPN rankings, auction simulation, and optional Yahoo OAuth."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime
-
 from demo_data import demo_players
-from ranking import rank_players, recommendation_score
+from espn_data import load_players as load_espn_players
+from ranking import rank_players
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -75,7 +75,7 @@ def request_json(url: str, *, method: str = "GET", body: dict | None = None, hea
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors="replace")
-        raise RuntimeError(f"Yahoo isteği başarısız ({error.code}): {detail[:300]}") from error
+        raise RuntimeError(f"Dış veri isteği başarısız ({error.code}): {detail[:300]}") from error
 
 
 def client_credentials() -> tuple[str, str]:
@@ -298,18 +298,20 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/players":
                 mode = query.get("mode", ["points"])[0]
-                league_key = query.get("league_key", [env("YAHOO_LEAGUE_KEY")])[0]
                 source = "demo"
                 players = demo_players()
-                warning = "Yahoo bağlı değil; gösterim verisi kullanılıyor."
+                warning = "ESPN verisi alınamadı; gösterim verisi kullanılıyor."
                 seasons = []
-                if load_tokens().get("refresh_token") or env("YAHOO_REFRESH_TOKEN"):
-                    live_players, seasons = historical_players()
+                try:
+                    force = query.get("refresh", ["0"])[0] == "1"
+                    live_players, seasons = load_espn_players(DATA_DIR, request_json, force)
                     if live_players:
-                        players, source, warning = live_players, "yahoo-history", ""
+                        players, source, warning = live_players, "espn", ""
+                except Exception as error:
+                    warning = f"Canlı veri alınamadı: {error}. Demo veri kullanılıyor."
                 ranked = rank_players(players, mode)
                 self.json_response({"players": ranked, "source": source, "warning": warning, "seasons": seasons,
-                                    "model": "65/35 two-season blend" if seasons else "demo", "updated_at": int(time.time())})
+                                    "model": "50/30/20 three-season blend" if seasons else "demo", "updated_at": int(time.time())})
                 return
             if parsed.path == "/auth/yahoo":
                 client_id, client_secret = client_credentials()

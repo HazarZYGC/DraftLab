@@ -45,7 +45,7 @@ class RankingTests(unittest.TestCase):
         ranked = rank_players([healthy, risky], "points")
         scores = {player["id"]: player["score"] for player in ranked}
         self.assertGreater(scores["healthy"], scores["risky"])
-        self.assertAlmostEqual(next(p for p in ranked if p["id"] == "risky")["availability_multiplier"], .895)
+        self.assertAlmostEqual(next(p for p in ranked if p["id"] == "risky")["availability_multiplier"], .82)
 
 
 if __name__ == "__main__":

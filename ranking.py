@@ -57,13 +57,19 @@ def rank_players(
             per_game_score = sum(float(stats.get(key, 0) or 0) * weight for key, weight in point_weights.items())
             category_scores = {key: float(stats.get(key, 0) or 0) * weight for key, weight in point_weights.items()}
             availability = min(1.0, max(0.0, float(item.get("availability", 1))))
-            # Missed games matter, but should not make an elite per-game producer
-            # undraftable: 30% missed games produces a 10.5% value discount.
-            availability_multiplier = 1 - (0.35 * (1 - availability))
-            raw_score = per_game_score * availability_multiplier
+            missed_rate = 1 - availability
+            # No IL slots: missed games are deliberately punished twice—first
+            # through projected games, then through a recurrence-risk haircut.
+            expected_games = 82 * (0.20 + 0.80 * availability)
+            availability_multiplier = max(0.55, 1 - (0.60 * missed_rate))
+            history_confidence = min(1.0, max(0.5, float(item.get("history_confidence", 1))))
+            projected_total = per_game_score * expected_games * availability_multiplier * history_confidence
+            raw_score = projected_total
             item["fantasy_ppg"] = round(per_game_score, 2)
             item["availability_multiplier"] = round(availability_multiplier, 3)
-            item["expected_games"] = round(82 * availability)
+            item["expected_games"] = round(expected_games)
+            item["projected_total"] = round(projected_total, 1)
+            item["history_confidence"] = history_confidence
         else:
             raw_score = 0.0
             for category in CATEGORIES:
@@ -83,9 +89,9 @@ def rank_players(
         status = str(item.get("status", "Healthy")).lower()
         risk_penalty = 0.0
         if any(word in status for word in ("out", "inj", "suspended")):
-            risk_penalty = raw_score * 0.10 if mode == "points" else 1.6
+            risk_penalty = raw_score * 0.15 if mode == "points" else 1.6
         elif any(word in status for word in ("day-to-day", "questionable", "gtd")):
-            risk_penalty = raw_score * 0.04 if mode == "points" else 0.55
+            risk_penalty = raw_score * 0.07 if mode == "points" else 0.55
 
         item["base_score"] = round(raw_score, 3)
         item["score"] = round(raw_score - risk_penalty, 3)

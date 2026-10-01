@@ -1,7 +1,7 @@
-const state = { players: [], filtered: [], source: 'demo', position: 'ALL', mode: 'points', draft: null };
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
-const initials = (name) => name.split(' ').slice(0, 2).map(part => part[0]).join('');
+const state = { players: [], filtered: [], position: 'ALL', auction: null, values: new Map(), targets: new Set(JSON.parse(localStorage.getItem('draftlab-targets') || '[]')), timerHandle: null };
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const fmt = (value, digits = 1) => Number(value || 0).toFixed(digits);
 
 async function api(path) {
@@ -13,131 +13,253 @@ async function api(path) {
 
 function toast(message) {
   const node = $('#toast'); node.textContent = message; node.classList.add('show');
-  setTimeout(() => node.classList.remove('show'), 2200);
+  setTimeout(() => node.classList.remove('show'), 2400);
 }
 
-async function loadStatusAndLeagues() {
+async function loadPlayers(force = false) {
+  $('#refreshBtn').classList.add('loading'); $('#syncText').textContent = 'Üç sezon yükleniyor…';
   try {
-    const status = await api('/api/status');
-    if (status.connected) {
-      const { leagues } = await api('/api/leagues');
-      leagues.forEach(league => $('#leagueSelect').insertAdjacentHTML('beforeend', `<option value="${league.key}">${league.name}${league.season ? ` · ${league.season}` : ''}</option>`));
-      if (leagues[0]) $('#leagueSelect').value = leagues[0].key;
-      await loadPlayers();
-    } else if (status.configured) {
-      showNotice('Yahoo ayarları bulundu. Canlı ligin için <a href="/auth/yahoo">Yahoo hesabını bağla →</a>');
-    } else {
-      showNotice('Şu an demo veri gösteriliyor. Canlı veri için README’deki üç Yahoo ayarını ekle.');
-    }
-  } catch (error) { showNotice(`Yahoo bağlantısı kontrol edilemedi: ${error.message}`); }
-}
-
-function showNotice(html) { const notice = $('#notice'); notice.innerHTML = html; notice.classList.remove('hidden'); }
-
-async function loadPlayers() {
-  $('#refreshBtn').classList.add('loading'); $('#syncText').textContent = 'Yenileniyor…';
-  const league = $('#leagueSelect').value;
-  try {
-    const data = await api(`/api/players?mode=${state.mode}&league_key=${encodeURIComponent(league)}`);
-    state.players = data.players; state.source = data.source;
-    $('#syncDot').classList.toggle('live', data.source.startsWith('yahoo'));
-    $('#syncText').textContent = data.source.startsWith('yahoo') ? `Yahoo · ${data.seasons.join(' + ')}` : 'Demo veri';
-    if (data.warning) showNotice(data.warning);
-    else $('#notice').classList.add('hidden');
-    applyFilters(); renderDraft();
-  } catch (error) { showNotice(error.message); $('#syncText').textContent = 'Yenileme başarısız'; }
+    const data = await api(`/api/players?mode=points${force ? '&refresh=1' : ''}`);
+    state.players = data.players; calculateAuctionValues();
+    $('#syncDot').classList.toggle('live', data.source === 'espn');
+    $('#syncText').textContent = data.source === 'espn' ? `ESPN · ${data.seasons.join(' / ')}` : 'Demo veri';
+    if (data.warning) showNotice(data.warning); else $('#notice').classList.add('hidden');
+    applyFilters(); renderAuction();
+  } catch (error) { showNotice(error.message); $('#syncText').textContent = 'Veri alınamadı'; }
   finally { $('#refreshBtn').classList.remove('loading'); }
+}
+
+function showNotice(text) { const node = $('#notice'); node.textContent = text; node.classList.remove('hidden'); }
+
+function settings() {
+  return state.auction?.settings || { teamCount: 10, budget: 200, rosterSize: 13 };
+}
+
+function calculateAuctionValues() {
+  if (!state.players.length) return;
+  const { teamCount, budget, rosterSize } = settings();
+  const positions = ['PG', 'SG', 'SF', 'PF', 'C'];
+  const demandPerPosition = Math.max(teamCount * 2, Math.round(teamCount * rosterSize / 5));
+  const baselines = Object.fromEntries(positions.map(position => {
+    const eligible = state.players.filter(player => player.positions.includes(position)).map(player => player.projected_total || player.score).sort((a, b) => b - a);
+    return [position, eligible[Math.min(demandPerPosition - 1, eligible.length - 1)] || 0];
+  }));
+  const scored = state.players.map(player => {
+    const total = player.projected_total || player.score;
+    const baseline = Math.max(...player.positions.map(position => baselines[position] || 0), 0);
+    const flexibility = player.positions.length > 1 ? 1.035 : 1;
+    return { player, surplus: Math.max(0, total - baseline * .82) * flexibility };
+  }).sort((a, b) => b.surplus - a.surplus);
+  const rosterable = scored.slice(0, teamCount * rosterSize);
+  const totalSurplus = rosterable.reduce((sum, entry) => sum + entry.surplus, 0) || 1;
+  const discretionaryPool = teamCount * Math.max(0, budget - rosterSize);
+  state.values = new Map(scored.map(entry => [entry.player.id, entry.surplus > 0 ? Math.max(1, Math.round(1 + discretionaryPool * entry.surplus / totalSurplus)) : 1]));
 }
 
 function applyFilters() {
   const term = $('#searchInput').value.toLocaleLowerCase('tr');
   state.filtered = state.players.filter(player => (state.position === 'ALL' || player.positions.includes(state.position)) && player.name.toLocaleLowerCase('tr').includes(term));
-  renderTable();
+  renderBoard();
 }
 
-function renderTable() {
+function riskLabel(player) {
+  if (typeof player.missed_game_rate !== 'number') return 'Veri yok';
+  const missed = Math.round(player.missed_game_rate * 100);
+  return `${missed >= 25 ? 'Yüksek' : missed >= 12 ? 'Orta' : 'Düşük'} · %${missed}`;
+}
+
+function renderBoard() {
   $('#playerTotal').textContent = `${state.filtered.length} oyuncu`;
   $('#emptyState').classList.toggle('hidden', state.filtered.length > 0);
-  $('#playerRows').innerHTML = state.filtered.map(player => {
-    const stats = player.stats; const hasRiskData = typeof player.missed_game_rate === 'number';
-    const missed = hasRiskData ? player.missed_game_rate : null;
-    const warning = (hasRiskData && missed >= .2) || player.status !== 'Healthy';
-    const riskLabel = !hasRiskData ? 'Veri yok' : missed >= .25 ? `Yüksek · %${Math.round(missed * 100)}` : missed >= .1 ? `Orta · %${Math.round(missed * 100)}` : `Düşük · %${Math.round(missed * 100)}`;
-    const history = player.season_history?.map(item => `${item.season}: ${item.games} maç`).join(' · ') || 'Demo veri';
-    return `<tr><td class="rank-cell">${String(player.rank).padStart(2, '0')}</td><td><div class="player-cell"><span class="avatar">${initials(player.name)}</span><span class="player-meta"><strong>${player.name}</strong><span>${player.team}</span></span></div></td><td>${player.positions.map(pos => `<span class="pos-badge">${pos}</span>`).join('')}</td><td>${fmt(stats.pts)}</td><td>${fmt(stats.reb)}</td><td>${fmt(stats.ast)}</td><td>${fmt(stats.stl)}</td><td>${fmt(stats.blk)}</td><td>${fmt(stats.fg_pct * 100)}%</td><td>${fmt(stats.ft_pct * 100)}%</td><td><span class="risk ${warning ? 'warn' : ''}" title="${history}${player.injury_note ? ` · ${player.injury_note}` : ''}">${riskLabel}</span></td><td><span class="score-pill">${fmt(player.score, 2)}</span></td></tr>`;
-  }).join('');
+  $('#playerRows').innerHTML = state.filtered.map(player => `<tr>
+    <td class="rank-cell">${String(player.rank).padStart(2, '0')}</td>
+    <td><div class="player-cell">${player.headshot ? `<img class="avatar photo" src="${player.headshot}" alt="">` : `<span class="avatar">${initials(player.name)}</span>`}<span class="player-meta"><strong>${player.name}</strong><span>${player.team} · ${riskLabel(player)}</span></span></div></td>
+    <td>${player.positions.map(pos => `<span class="pos-badge">${pos}</span>`).join('')}</td>
+    <td>${fmt(player.fantasy_ppg)}</td><td>${player.expected_games || '—'}</td>
+    <td class="${player.missed_game_rate >= .2 ? 'risk-high' : ''}">%${Math.round((player.missed_game_rate || 0) * 100)}</td>
+    <td>${Math.round(player.projected_total || player.score).toLocaleString('tr-TR')}</td>
+    <td><span class="score-pill">$${state.values.get(player.id) || 1}</span></td>
+    <td><button class="target-button ${state.targets.has(player.id) ? 'active' : ''}" data-target-id="${player.id}" title="Hedef oyuncu">★</button></td></tr>`).join('');
+  $$('[data-target-id]').forEach(button => button.addEventListener('click', () => toggleTarget(button.dataset.targetId)));
 }
 
-function shuffle(items) {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [copy[i], copy[j]] = [copy[j], copy[i]]; }
-  return copy;
+function toggleTarget(id) {
+  state.targets.has(id) ? state.targets.delete(id) : state.targets.add(id);
+  localStorage.setItem('draftlab-targets', JSON.stringify([...state.targets])); renderBoard(); renderAuction();
 }
 
-function startDraft(teamCount, rounds) {
-  const teams = shuffle(['Sen', ...Array.from({ length: teamCount - 1 }, (_, i) => `Rakip ${i + 1}`)]);
-  state.draft = { teams, rounds, pick: 0, drafted: [], rosters: Object.fromEntries(teams.map(team => [team, []])) };
-  saveDraft(); $('#draftSetup').classList.add('hidden'); $('#draftRoom').classList.remove('hidden'); renderDraft();
+function startAuction(form) {
+  const opponents = $('#opponentNames').value.split('\n').map(name => name.trim()).filter(Boolean);
+  if (!opponents.length) return toast('En az bir rakip adı gir.');
+  const teamCount = opponents.length + 1; const myPosition = Math.min(teamCount, Math.max(1, Number($('#myPositionInput').value))) - 1;
+  const names = [...opponents]; names.splice(myPosition, 0, 'Sen');
+  const auctionSettings = {
+    teamCount, budget: Number($('#budgetInput').value), rosterSize: Number($('#rosterInput').value),
+    nominationSeconds: Number($('#nominationTimeInput').value), bidSeconds: Number($('#bidTimeInput').value), myPosition,
+  };
+  state.auction = {
+    version: 2, settings: auctionSettings, teams: names.map(name => ({ name, budget: auctionSettings.budget, roster: [] })),
+    nominatorIndex: 0, phase: 'nomination', timer: auctionSettings.nominationSeconds, paused: false,
+    nominatedPlayerId: null, highBid: 0, highBidderIndex: null, drafted: [], purchases: [],
+  };
+  calculateAuctionValues(); saveAuction(); showRoom(); startTimer(); renderAuction();
 }
 
-function pickSequence() {
-  if (!state.draft) return [];
-  const sequence = [];
-  for (let round = 0; round < state.draft.rounds; round++) sequence.push(...(round % 2 ? [...state.draft.teams].reverse() : state.draft.teams));
-  return sequence;
+function showRoom() { $('#auctionSetup').classList.add('hidden'); $('#auctionRoom').classList.remove('hidden'); }
+function saveAuction() { localStorage.setItem('draftlab-auction-v2', JSON.stringify(state.auction)); }
+
+function restoreAuction() {
+  try { state.auction = JSON.parse(localStorage.getItem('draftlab-auction-v2')); } catch { state.auction = null; }
+  if (state.auction?.version === 2) { showRoom(); startTimer(); }
 }
 
-function getRecommendation() {
-  if (!state.draft) return null;
-  const available = state.players.filter(player => !state.draft.drafted.includes(player.id));
-  const roster = state.draft.rosters['Sen'];
-  const rosterPositions = roster.flatMap(player => player.positions);
-  const round = Math.floor(state.draft.pick / state.draft.teams.length) + 1;
-  return available.map(player => {
-    let fit = player.score + (player.positions.some(pos => !rosterPositions.includes(pos)) && round >= 3 ? .35 : 0) + (player.positions.length > 1 ? .15 : 0) + (player.risk_penalty ? 0 : .12);
-    const hasRiskData = typeof player.missed_game_rate === 'number';
-    const missed = hasRiskData ? player.missed_game_rate : null;
-    const reason = hasRiskData && missed >= .2 ? `Üretimi yüksek; son iki sezonda ağırlıklı maç kaçırma oranı %${Math.round(missed * 100)}.` : player.risk_penalty ? 'Üretimi yüksek; güncel sakatlık durumunu izle.' : hasRiskData && player.positions.length > 1 ? 'Yüksek fantasy puanı, düşük sakatlık riski ve çoklu mevki esnekliği.' : hasRiskData ? 'Kalan havuzdaki en güçlü risk ayarlı fantasy puanı.' : 'Demo modunda sakatlık geçmişi yok; öneri yalnızca fantasy üretimine dayanıyor.';
-    return { player, fit, reason };
-  }).sort((a, b) => b.fit - a.fit)[0];
+function startTimer() {
+  clearInterval(state.timerHandle);
+  state.timerHandle = setInterval(() => {
+    if (!state.auction || state.auction.paused) return;
+    state.auction.timer = Math.max(0, state.auction.timer - 1);
+    if (state.auction.timer === 0) {
+      if (state.auction.phase === 'bidding') awardPlayer();
+      else autoNominate();
+    }
+    saveAuction(); updateClock();
+  }, 1000);
 }
 
-function renderDraft() {
-  if (!state.draft || !state.players.length) return;
-  const sequence = pickSequence(); const owner = sequence[state.draft.pick]; const finished = state.draft.pick >= sequence.length;
-  const round = Math.floor(state.draft.pick / state.draft.teams.length) + 1; const pickInRound = state.draft.pick % state.draft.teams.length + 1;
-  $('#pickLabel').textContent = finished ? 'Draft tamamlandı' : `${round}. Tur · ${pickInRound}. Seçim`;
-  $('#currentTeam').textContent = finished ? '—' : owner; $('#currentTeam').style.color = owner === 'Sen' ? 'var(--purple)' : '';
-  $('#draftCount').textContent = state.draft.drafted.length;
-  $('#orderStrip').innerHTML = state.draft.teams.map((team, index) => `<span title="${team}" class="order-chip ${team === owner ? 'active' : ''} ${team === 'Sen' ? 'me' : ''}">${index + 1}</span>`).join('');
-  const roster = state.draft.rosters['Sen']; $('#rosterCount').textContent = `${roster.length}/${state.draft.rounds}`;
-  $('#myRoster').innerHTML = roster.length ? roster.map((player, index) => `<div class="roster-player"><span class="avatar">${initials(player.name)}</span><div><strong>${player.name}</strong><br><span>${player.positions.join('/')} · ${index + 1}. seçim</span></div></div>`).join('') : '<p style="color:#788075;font-size:11px">Henüz seçim yapmadın.</p>';
-  const rec = getRecommendation();
-  $('#recommendation').innerHTML = rec ? `<span class="mini-label">ÖNERİLEN SEÇİM</span><h3>${rec.player.name}</h3><p>${rec.reason}</p><div class="rec-stats"><span>${fmt(rec.player.stats.pts)} PTS</span><span>${fmt(rec.player.stats.reb)} REB</span><span>${fmt(rec.player.stats.ast)} AST</span></div>` : '<h3>Draft tamamlandı</h3>';
-  const term = $('#draftSearch').value.toLocaleLowerCase('tr'); const position = $('#draftPosition').value;
-  const available = state.players.filter(player => !state.draft.drafted.includes(player.id) && player.name.toLocaleLowerCase('tr').includes(term) && (position === 'ALL' || player.positions.includes(position)));
-  $('#draftGrid').innerHTML = available.map(player => `<button class="draft-card ${rec?.player.id === player.id ? 'recommended' : ''}" data-player-id="${player.id}" ${finished ? 'disabled' : ''}><span class="avatar">${initials(player.name)}</span><span class="player-meta"><strong>${player.name}</strong><span>${player.team} · ${player.positions.join('/')}</span></span><span class="value">#${player.rank}</span></button>`).join('');
-  $$('.draft-card').forEach(card => card.addEventListener('click', () => draftPlayer(card.dataset.playerId)));
+function updateClock() {
+  if (!state.auction) return;
+  $('#clock').textContent = state.auction.timer; $('#clock').classList.toggle('urgent', state.auction.timer <= 10);
+  $('#pauseTimer').textContent = state.auction.paused ? 'Saati devam ettir' : 'Saati durdur';
 }
 
-function draftPlayer(playerId) {
-  const sequence = pickSequence(); const owner = sequence[state.draft.pick]; const player = state.players.find(item => item.id === playerId);
-  if (!owner || !player) return;
-  state.draft.drafted.push(player.id); state.draft.rosters[owner].push(player); state.draft.pick += 1; saveDraft(); renderDraft(); toast(`${player.name} → ${owner}`);
+function activeTeams() { return state.auction.teams.filter(team => team.roster.length < state.auction.settings.rosterSize); }
+function currentNominator() { return state.auction.teams[state.auction.nominatorIndex]; }
+function availablePlayers() { return state.players.filter(player => !state.auction.drafted.includes(player.id)); }
+
+function maxLegalBid(teamIndex) {
+  const team = state.auction.teams[teamIndex]; const emptyAfterWin = state.auction.settings.rosterSize - team.roster.length - 1;
+  return Math.max(0, team.budget - Math.max(0, emptyAfterWin));
 }
 
-function saveDraft() { localStorage.setItem('draftlab-draft', JSON.stringify(state.draft)); }
-function restoreDraft() {
-  try { state.draft = JSON.parse(localStorage.getItem('draftlab-draft')); } catch { state.draft = null; }
-  if (state.draft) { $('#draftSetup').classList.add('hidden'); $('#draftRoom').classList.remove('hidden'); }
+function marketMultiplier() {
+  if (!state.auction?.purchases.length) return 1;
+  const actual = state.auction.purchases.reduce((sum, item) => sum + item.price, 0);
+  const fair = state.auction.purchases.reduce((sum, item) => sum + (state.values.get(item.playerId) || 1), 0) || 1;
+  return Math.min(1.22, Math.max(.82, actual / fair));
 }
 
-$$('.nav-link').forEach(button => button.addEventListener('click', () => { $$('.nav-link').forEach(item => item.classList.toggle('active', item === button)); $$('.view').forEach(view => view.classList.remove('active')); $(`#${button.dataset.view}View`).classList.add('active'); renderDraft(); }));
+function recommendedMax(player) {
+  let value = (state.values.get(player.id) || 1) * marketMultiplier();
+  const myTeam = state.auction.teams[state.auction.settings.myPosition]; const rosterPlayers = myTeam.roster.map(id => state.players.find(player => player.id === id)).filter(Boolean);
+  const covered = rosterPlayers.flatMap(item => item.positions);
+  if (player.positions.some(position => !covered.includes(position)) && rosterPlayers.length >= 3) value *= 1.07;
+  if (state.targets.has(player.id)) value *= 1.08;
+  if ((player.missed_game_rate || 0) >= .25) value *= .94;
+  const remainingSlots = state.auction.settings.rosterSize - myTeam.roster.length;
+  const paceBudget = Math.max(0, myTeam.budget - remainingSlots);
+  const pace = paceBudget / Math.max(1, remainingSlots);
+  if (pace < state.auction.settings.budget / state.auction.settings.rosterSize * .65) value *= .9;
+  return Math.max(1, Math.min(maxLegalBid(state.auction.settings.myPosition), Math.round(value)));
+}
+
+function autoNominate() {
+  const player = availablePlayers()[0]; if (player) nominatePlayer(player.id, true);
+}
+
+function nominatePlayer(playerId, automatic = false) {
+  if (!state.auction || state.auction.phase !== 'nomination') return;
+  const nominator = currentNominator();
+  if (!nominator || nominator.roster.length >= state.auction.settings.rosterSize) { advanceNominator(); return; }
+  state.auction.phase = 'bidding'; state.auction.nominatedPlayerId = playerId; state.auction.highBid = 1;
+  state.auction.highBidderIndex = state.auction.nominatorIndex; state.auction.timer = state.auction.settings.bidSeconds;
+  saveAuction(); renderAuction(); if (automatic) toast('Süre doldu; en yüksek sıradaki oyuncu otomatik nomine edildi.');
+}
+
+function placeBid(teamIndex, amount) {
+  if (state.auction.phase !== 'bidding') return;
+  if (amount <= state.auction.highBid) return toast(`Teklif en az $${state.auction.highBid + 1} olmalı.`);
+  if (amount > maxLegalBid(teamIndex)) return toast(`Bu takımın maksimum teklifi $${maxLegalBid(teamIndex)}.`);
+  if (state.auction.teams[teamIndex].roster.length >= state.auction.settings.rosterSize) return toast('Bu takımın kadrosu dolu.');
+  state.auction.highBid = amount; state.auction.highBidderIndex = teamIndex;
+  if (state.auction.timer < 10) state.auction.timer = 10;
+  saveAuction(); renderAuction();
+}
+
+function awardPlayer() {
+  if (!state.auction || state.auction.phase !== 'bidding') return;
+  const player = state.players.find(item => item.id === state.auction.nominatedPlayerId);
+  const team = state.auction.teams[state.auction.highBidderIndex];
+  if (!player || !team) return;
+  const purchase = { playerId: player.id, teamIndex: state.auction.highBidderIndex, price: state.auction.highBid, nominatorIndex: state.auction.nominatorIndex };
+  team.budget -= purchase.price; team.roster.push(player.id); state.auction.drafted.push(player.id); state.auction.purchases.push(purchase);
+  toast(`${player.name}, ${team.name} takımına $${purchase.price}`); advanceNominator(); saveAuction(); calculateAuctionValues(); renderAuction();
+}
+
+function advanceNominator() {
+  const total = state.auction.teams.length; let next = state.auction.nominatorIndex;
+  for (let count = 0; count < total; count++) { next = (next + 1) % total; if (state.auction.teams[next].roster.length < state.auction.settings.rosterSize) break; }
+  state.auction.nominatorIndex = next; state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null;
+  state.auction.highBid = 0; state.auction.highBidderIndex = null; state.auction.timer = state.auction.settings.nominationSeconds;
+}
+
+function undoLastSale() {
+  const purchase = state.auction?.purchases.pop(); if (!purchase) return toast('Geri alınacak satış yok.');
+  const team = state.auction.teams[purchase.teamIndex]; team.budget += purchase.price; team.roster = team.roster.filter(id => id !== purchase.playerId);
+  state.auction.drafted = state.auction.drafted.filter(id => id !== purchase.playerId); state.auction.nominatorIndex = purchase.nominatorIndex;
+  state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null; state.auction.highBid = 0; state.auction.highBidderIndex = null;
+  state.auction.timer = state.auction.settings.nominationSeconds; saveAuction(); renderAuction(); toast('Son satış geri alındı.');
+}
+
+function renderAuction() {
+  if (!state.auction || !state.players.length) return;
+  updateClock(); const auction = state.auction; const me = auction.teams[auction.settings.myPosition]; const nominated = state.players.find(player => player.id === auction.nominatedPlayerId);
+  $('#draftCount').textContent = auction.drafted.length; $('#phaseLabel').textContent = auction.phase === 'nomination' ? 'Nomination' : 'Teklif açık';
+  $('#turnCaption').textContent = auction.phase === 'nomination' ? 'Sıradaki nomination' : 'Oyuncuyu nomine eden'; $('#currentNominator').textContent = currentNominator()?.name || '—';
+  $('#myBudget').textContent = `$${me.budget}`; const remaining = auction.settings.rosterSize - me.roster.length;
+  $('#myPace').textContent = remaining ? `$${fmt(me.budget / remaining, 2)} / boş yer` : 'Kadro tamamlandı'; $('#rosterCount').textContent = `${me.roster.length}/${auction.settings.rosterSize}`;
+  $('#teamStrip').innerHTML = auction.teams.map((team, index) => `<div class="team-card ${index === auction.nominatorIndex ? 'active' : ''} ${index === auction.settings.myPosition ? 'me' : ''}"><span>${team.name}</span><strong>$${team.budget}</strong><small>${team.roster.length}/${auction.settings.rosterSize}</small></div>`).join('');
+  $('#myRoster').innerHTML = me.roster.length ? me.roster.map(id => { const player = state.players.find(item => item.id === id); const sale = auction.purchases.find(item => item.playerId === id); return `<div class="roster-player"><span>${player?.name || id}</span><strong>$${sale?.price || 0}</strong></div>`; }).join('') : '<p class="muted-small">Henüz oyuncu almadın.</p>';
+  $('#bidStage').classList.toggle('hidden', auction.phase !== 'bidding'); $('.auction-toolbar').classList.toggle('hidden', auction.phase === 'bidding');
+  if (nominated) renderBidStage(nominated);
+  const term = $('#auctionSearch').value.toLocaleLowerCase('tr'); const position = $('#auctionPosition').value;
+  const available = availablePlayers().filter(player => player.name.toLocaleLowerCase('tr').includes(term) && (position === 'ALL' || player.positions.includes(position)));
+  $('#auctionGrid').innerHTML = auction.phase === 'nomination' ? available.slice(0, 180).map(player => `<button class="auction-player ${state.targets.has(player.id) ? 'target' : ''}" data-nominate="${player.id}"><span><strong>${player.name}</strong><small>${player.team} · ${player.positions.join('/')} · ${fmt(player.fantasy_ppg)} FPPG</small></span><b>$${state.values.get(player.id) || 1}</b></button>`).join('') : '';
+  $$('[data-nominate]').forEach(button => button.addEventListener('click', () => nominatePlayer(button.dataset.nominate)));
+  renderRecommendation(nominated); renderPurchaseLog();
+}
+
+function renderBidStage(player) {
+  const auction = state.auction; const leader = auction.teams[auction.highBidderIndex];
+  $('#nominatedPlayer').innerHTML = `${player.headshot ? `<img src="${player.headshot}" alt="">` : ''}<div><span class="mini-label">NOMİNE EDİLEN</span><h2>${player.name}</h2><p>${player.team} · ${player.positions.join('/')} · ${fmt(player.fantasy_ppg)} FPPG · ${riskLabel(player)}</p></div><span class="fair-price">Fair $${state.values.get(player.id) || 1}</span>`;
+  $('#highBid').textContent = `$${auction.highBid}`; $('#highBidder').textContent = leader?.name || '—';
+  $('#bidderSelect').innerHTML = auction.teams.map((team, index) => `<option value="${index}" ${index === auction.settings.myPosition ? 'selected' : ''} ${team.roster.length >= auction.settings.rosterSize ? 'disabled' : ''}>${team.name} · $${team.budget}</option>`).join('');
+  $('#bidAmount').min = auction.highBid + 1; $('#bidAmount').value = auction.highBid + 1;
+}
+
+function renderRecommendation(nominated) {
+  const available = availablePlayers();
+  if (nominated) {
+    const max = recommendedMax(nominated); const current = state.auction.highBid; const verdict = current < max ? `$${max}'a kadar teklif ver` : current === max ? 'Bu son mantıklı teklif' : 'PASS — fiyat değeri geçti';
+    $('#recommendation').innerHTML = `<span class="mini-label">CANLI KARAR</span><h3>${verdict}</h3><p>Fair $${state.values.get(nominated.id) || 1} · Piyasa ×${fmt(marketMultiplier(), 2)} · Risk ${riskLabel(nominated)}</p>`;
+  } else {
+    const target = available.find(player => state.targets.has(player.id)) || available[Math.min(12, available.length - 1)] || available[0];
+    $('#recommendation').innerHTML = target ? `<span class="mini-label">NOMINATION FİKRİ</span><h3>${target.name}</h3><p>Fair $${state.values.get(target.id) || 1}. Hedefin değilse rakip bütçe harcatmak için erken nomine et.</p>` : '<h3>Draft tamamlandı</h3>';
+  }
+}
+
+function renderPurchaseLog() {
+  $('#purchaseLog').innerHTML = state.auction.purchases.length ? [...state.auction.purchases].reverse().map(purchase => { const player = state.players.find(item => item.id === purchase.playerId); const team = state.auction.teams[purchase.teamIndex]; const fair = state.values.get(purchase.playerId) || 1; return `<div><span>${player?.name || purchase.playerId}</span><span>${team.name}</span><strong>$${purchase.price}</strong><small class="${purchase.price <= fair ? 'value-good' : 'value-over'}">${purchase.price <= fair ? 'değer' : 'pahalı'} · fair $${fair}</small></div>`; }).join('') : '<p class="muted-small">Henüz tamamlanan satış yok.</p>';
+}
+
+$$('.nav-link').forEach(button => button.addEventListener('click', () => { $$('.nav-link').forEach(item => item.classList.toggle('active', item === button)); $$('.view').forEach(view => view.classList.remove('active')); $(`#${button.dataset.view}View`).classList.add('active'); renderAuction(); }));
 $('#positionFilters').addEventListener('click', event => { if (!event.target.dataset.position) return; state.position = event.target.dataset.position; $$('#positionFilters button').forEach(button => button.classList.toggle('active', button === event.target)); applyFilters(); });
-$('#searchInput').addEventListener('input', applyFilters); $('#draftSearch').addEventListener('input', renderDraft); $('#draftPosition').addEventListener('change', renderDraft);
-$('#modeSelect').addEventListener('change', event => { state.mode = event.target.value; loadPlayers(); }); $('#leagueSelect').addEventListener('change', loadPlayers); $('#refreshBtn').addEventListener('click', loadPlayers);
-let teamCount = 10; $('#teamMinus').addEventListener('click', () => { teamCount = Math.max(4, teamCount - 1); $('#teamCount').textContent = teamCount; }); $('#teamPlus').addEventListener('click', () => { teamCount = Math.min(20, teamCount + 1); $('#teamCount').textContent = teamCount; });
-$('#draftForm').addEventListener('submit', event => { event.preventDefault(); startDraft(teamCount, Number($('#roundCount').value)); });
-$('#resetDraft').addEventListener('click', () => { if (!confirm('Mevcut draft seçimleri silinsin mi?')) return; localStorage.removeItem('draftlab-draft'); state.draft = null; $('#draftRoom').classList.add('hidden'); $('#draftSetup').classList.remove('hidden'); $('#draftCount').textContent = '0'; });
+$('#searchInput').addEventListener('input', applyFilters); $('#refreshBtn').addEventListener('click', () => loadPlayers(true));
+$('#auctionSearch').addEventListener('input', renderAuction); $('#auctionPosition').addEventListener('change', renderAuction);
+$('#auctionForm').addEventListener('submit', event => { event.preventDefault(); startAuction(event.target); });
+$('#pauseTimer').addEventListener('click', () => { state.auction.paused = !state.auction.paused; saveAuction(); updateClock(); });
+$('#placeBid').addEventListener('click', () => placeBid(Number($('#bidderSelect').value), Number($('#bidAmount').value)));
+$$('.quick-bids button').forEach(button => button.addEventListener('click', () => { $('#bidAmount').value = state.auction.highBid + Number(button.dataset.increment); }));
+$('#awardNow').addEventListener('click', awardPlayer); $('#undoAuction').addEventListener('click', undoLastSale);
+$('#resetAuction').addEventListener('click', () => { if (!confirm('Auction geçmişi ve tüm kadrolar silinsin mi?')) return; localStorage.removeItem('draftlab-auction-v2'); state.auction = null; clearInterval(state.timerHandle); $('#auctionRoom').classList.add('hidden'); $('#auctionSetup').classList.remove('hidden'); $('#draftCount').textContent = '0'; calculateAuctionValues(); renderBoard(); });
 
-restoreDraft(); loadPlayers().then(loadStatusAndLeagues);
+restoreAuction(); loadPlayers();

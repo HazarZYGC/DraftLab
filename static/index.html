@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#10130f">
-  <title>DraftLab — NBA Fantasy Assistant</title>
+  <title>DraftLab — NBA Auction Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -13,97 +13,77 @@
 <body>
   <header class="topbar">
     <a class="brand" href="#"><span class="brand-mark">DL</span><span>DraftLab</span></a>
-    <nav aria-label="Ana menü">
-      <button class="nav-link active" data-view="board">Oyuncu panosu</button>
-      <button class="nav-link" data-view="draft">Draft odası <span id="draftCount" class="count">0</span></button>
+    <nav>
+      <button class="nav-link active" data-view="board">Oyuncu değerleri</button>
+      <button class="nav-link" data-view="auction">Auction odası <span id="draftCount" class="count">0</span></button>
     </nav>
-    <div class="sync-wrap">
-      <span id="syncDot" class="sync-dot"></span>
-      <span id="syncText">Veri kontrol ediliyor</span>
-      <button id="refreshBtn" class="icon-button" title="Verileri yenile" aria-label="Verileri yenile">↻</button>
-    </div>
+    <div class="sync-wrap"><span id="syncDot" class="sync-dot"></span><span id="syncText">Veri yükleniyor</span><button id="refreshBtn" class="icon-button" title="Veriyi yenile">↻</button></div>
   </header>
 
   <main>
     <section id="boardView" class="view active">
       <div class="hero">
-        <div>
-          <p class="eyebrow">NBA FANTASY BOARD</p>
-          <h1>Draft gecesini<br><em>şansa bırakma.</em></h1>
-          <p class="hero-copy">Form, kategori katkısı, mevki kıtlığı ve sakatlık riskini tek bir sade listede gör.</p>
-        </div>
-        <div class="hero-score">
-          <span class="mini-label">MODEL</span>
-          <strong>POINTS</strong>
-          <span>2 sezon · 65/35</span>
-        </div>
+        <div><p class="eyebrow">NBA SALARY CAP DRAFT BOARD</p><h1>Oyuncuyu değil,<br><em>doğru fiyatı seç.</em></h1><p class="hero-copy">Son üç sezon üretimi, mevki kıtlığı ve ağır erişilebilirlik cezasıyla hesaplanan Yahoo Points League değerleri.</p></div>
+        <div class="hero-score"><span class="mini-label">MODEL</span><strong>3Y</strong><span>50 / 30 / 20</span></div>
       </div>
-
       <div id="notice" class="notice hidden"></div>
-
-      <section class="control-bar" aria-label="Filtreler">
+      <section class="control-bar">
         <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Oyuncu ara…"></label>
-        <div id="positionFilters" class="segmented">
-          <button class="active" data-position="ALL">Tümü</button><button data-position="PG">PG</button>
-          <button data-position="SG">SG</button><button data-position="SF">SF</button>
-          <button data-position="PF">PF</button><button data-position="C">C</button>
-        </div>
-        <label class="select-label">Format
-          <select id="modeSelect"><option value="points" selected>Puan ligi</option><option value="categories">9-Cat H2H</option></select>
-        </label>
-        <label class="select-label">Lig
-          <select id="leagueSelect"><option value="">Demo board</option></select>
-        </label>
+        <div id="positionFilters" class="segmented"><button class="active" data-position="ALL">Tümü</button><button data-position="PG">PG</button><button data-position="SG">SG</button><button data-position="SF">SF</button><button data-position="PF">PF</button><button data-position="C">C</button></div>
+        <span class="formula">PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK − TO</span>
       </section>
-
       <section class="board-card">
-        <div class="board-heading">
-          <div><span class="mini-label">KONSOLİDE SIRALAMA</span><h2>En değerli oyuncular</h2></div>
-          <span id="playerTotal" class="player-total">— oyuncu</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>#</th><th>Oyuncu</th><th>Pos</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>FG%</th><th>FT%</th><th>Risk</th><th>Skor</th></tr></thead>
-            <tbody id="playerRows"></tbody>
-          </table>
-        </div>
+        <div class="board-heading"><div><span class="mini-label">RİSK AYARLI SIRALAMA</span><h2>Auction değer panosu</h2></div><span id="playerTotal" class="player-total">— oyuncu</span></div>
+        <div class="table-wrap"><table><thead><tr><th>#</th><th>Oyuncu</th><th>Pos</th><th>FPPG</th><th>Proj. maç</th><th>Kaçırma</th><th>3Y toplam</th><th>Fair $</th><th>Hedef</th></tr></thead><tbody id="playerRows"></tbody></table></div>
         <div id="emptyState" class="empty hidden">Bu filtreye uyan oyuncu bulunamadı.</div>
       </section>
     </section>
 
-    <section id="draftView" class="view">
-      <div id="draftSetup" class="draft-setup">
-        <div class="setup-copy">
-          <p class="eyebrow">CANLI DRAFT YARDIMCISI</p>
-          <h1>Oda hazır.<br><em>Sıra sende.</em></h1>
-          <p>Takım sayısını gir. Sıralamayı kura ile belirleyelim; gerçek draftta yapılan her seçimi burada işaretle.</p>
-        </div>
-        <form id="draftForm" class="setup-card">
-          <span class="setup-number">01</span>
-          <label>Lig kaç takımlı?</label>
-          <div class="team-stepper"><button type="button" id="teamMinus">−</button><strong id="teamCount">10</strong><button type="button" id="teamPlus">+</button></div>
-          <label for="roundCount">Tur sayısı</label>
-          <select id="roundCount"><option>10</option><option selected>13</option><option>15</option></select>
-          <button type="submit" class="primary-button">Kurayı çek ve başlat <span>→</span></button>
+    <section id="auctionView" class="view">
+      <div id="auctionSetup" class="auction-setup">
+        <div class="setup-copy"><p class="eyebrow">YAHOO SALARY CAP SİMÜLATÖRÜ</p><h1>Masayı kur.<br><em>Bütçeyi koru.</em></h1><p>Rakip isimlerini gerçek nomination sırasıyla gir. Senin sıranı ayrıca seç; gerçek drafttaki her teklifi burada elle işle.</p></div>
+        <form id="auctionForm" class="setup-card">
+          <div class="setup-grid">
+            <label>Başlangıç bütçesi<input id="budgetInput" type="number" min="20" max="999" value="200"></label>
+            <label>Kadro büyüklüğü<input id="rosterInput" type="number" min="5" max="20" value="13"></label>
+            <label>Nomination süresi<input id="nominationTimeInput" type="number" min="10" max="120" value="30"></label>
+            <label>Bid süresi<input id="bidTimeInput" type="number" min="5" max="60" value="20"></label>
+          </div>
+          <label>Sen kaçıncı sıradasın?<input id="myPositionInput" type="number" min="1" value="1"></label>
+          <label>Rakip isimleri <small>(nomination sırasıyla, her satıra bir kişi)</small><textarea id="opponentNames" rows="7" placeholder="Ahmet&#10;Mehmet&#10;Can&#10;..." required></textarea></label>
+          <button class="primary-button" type="submit">Auction odasını başlat <span>→</span></button>
         </form>
       </div>
 
-      <div id="draftRoom" class="draft-room hidden">
-        <aside class="draft-sidebar">
-          <div class="room-title"><span class="live-dot"></span><div><span class="mini-label">DRAFT CANLI</span><h2 id="pickLabel">1. Tur · 1. Seçim</h2></div></div>
+      <div id="auctionRoom" class="auction-room hidden">
+        <aside class="auction-sidebar">
+          <div class="live-head"><span class="live-dot"></span><div><span class="mini-label">AUCTION CANLI</span><h2 id="phaseLabel">Nomination</h2></div><strong id="clock" class="clock">30</strong></div>
+          <button id="pauseTimer" class="pause-button">Saati durdur</button>
           <div id="recommendation" class="recommendation"></div>
-          <div class="roster-block"><div class="section-title"><h3>Kadrom</h3><span id="rosterCount">0/13</span></div><div id="myRoster" class="roster-list"></div></div>
-          <button id="resetDraft" class="text-button">Draftı sıfırla</button>
+          <div class="my-budget"><span>Kalan bütçem</span><strong id="myBudget">$200</strong><small id="myPace">$15.38 / boş yer</small></div>
+          <div class="section-title"><h3>Kadrom</h3><span id="rosterCount">0/13</span></div><div id="myRoster" class="roster-list"></div>
+          <div class="side-actions"><button id="undoAuction" class="text-button">Son satışı geri al</button><button id="resetAuction" class="text-button danger">Draftı sıfırla</button></div>
         </aside>
-        <div class="draft-main">
-          <div class="turn-strip"><span>Şu an seçen</span><strong id="currentTeam">—</strong><div id="orderStrip" class="order-strip"></div></div>
-          <div class="draft-toolbar"><label class="search"><span>⌕</span><input id="draftSearch" type="search" placeholder="Seçilen oyuncuyu ara…"></label><select id="draftPosition"><option value="ALL">Tüm mevkiler</option><option>PG</option><option>SG</option><option>SF</option><option>PF</option><option>C</option></select></div>
-          <div id="draftGrid" class="draft-grid"></div>
+
+        <div class="auction-main">
+          <div class="turn-strip"><div><span id="turnCaption">Sıradaki nomination</span><strong id="currentNominator">—</strong></div><div id="teamStrip" class="team-strip"></div></div>
+          <div id="bidStage" class="bid-stage hidden">
+            <div id="nominatedPlayer" class="nominated-player"></div>
+            <div class="bid-console">
+              <div><span class="mini-label">LİDER TEKLİF</span><strong id="highBid">$1</strong><span id="highBidder">—</span></div>
+              <label>Teklif veren<select id="bidderSelect"></select></label>
+              <label>Teklif<input id="bidAmount" type="number" min="2"></label>
+              <div class="quick-bids"><button data-increment="1">+$1</button><button data-increment="2">+$2</button><button data-increment="5">+$5</button></div>
+              <button id="placeBid" class="primary-button">Teklifi işle</button><button id="awardNow" class="award-button">Satışı şimdi bitir</button>
+            </div>
+          </div>
+          <div class="auction-toolbar"><label class="search"><span>⌕</span><input id="auctionSearch" type="search" placeholder="Nomine edilecek oyuncuyu ara…"></label><select id="auctionPosition"><option value="ALL">Tüm mevkiler</option><option>PG</option><option>SG</option><option>SF</option><option>PF</option><option>C</option></select></div>
+          <div id="auctionGrid" class="auction-grid"></div>
+          <div class="purchase-section"><div class="board-heading"><div><span class="mini-label">SATIŞ GEÇMİŞİ</span><h2>Alınan oyuncular</h2></div></div><div id="purchaseLog" class="purchase-log"></div></div>
         </div>
       </div>
     </section>
   </main>
-
   <div id="toast" class="toast"></div>
   <script src="/app.js"></script>
 </body>

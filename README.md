@@ -1,59 +1,42 @@
-# DraftLab — Yahoo NBA Fantasy Assistant
+# DraftLab — NBA Salary Cap Draft Assistant
 
-DraftLab is a lightweight, read-only NBA fantasy basketball tool. It ranks players for a Yahoo Head-to-Head Points League and provides recommendations during a live snake draft.
+DraftLab is a lightweight NBA fantasy basketball ranking and live auction companion. It is designed for a Yahoo Head-to-Head Points League with a salary-cap draft, but it does not require Yahoo API access to load player statistics.
 
-The application is intentionally simple and has no third-party Python dependencies.
+## What It Does
 
-## Features
+- Retrieves the three most recently completed NBA seasons from ESPN's public web data endpoint
+- Uses a 50% / 30% / 20% recency blend
+- Applies a deliberately strong missed-game penalty for leagues without IL slots
+- Converts ESPN's positional groups into Yahoo-style eligibility groups
+- Produces dynamic auction values based on league size, budget, roster size, position scarcity, and the remaining player pool
+- Simulates Yahoo's circular salary-cap nomination order
+- Uses configurable nomination and bid timers
+- Resets the bid clock to 10 seconds when a late bid is entered
+- Lets the user manually enter every manager's real draft bid
+- Tracks budgets, roster space, purchases, market inflation, and the user's targets
+- Recalculates a recommended maximum bid after every purchase
+- Stores the active auction locally across page refreshes
 
-- Yahoo OAuth 2.0 connection with automatic access-token refresh
-- Two-season, risk-adjusted NBA player rankings
-- Yahoo default Points League scoring
-- Position filters and player search
-- Current player status and injury-note support when supplied by Yahoo
-- Snake-draft simulation with a randomized draft order
-- Manual tracking of every selection made in the real draft
-- Roster-aware recommendations for the user's next pick
-- Local draft persistence across page refreshes
-- Demo mode when Yahoo data is not connected
-
-## Running Locally
+## Run Locally
 
 ```bash
 cd FantasyLeague
 python3 server.py
 ```
 
-Open `https://localhost:8000` in a browser. The project uses a self-signed development certificate, so the browser may display a local certificate warning on first use.
+Open `https://localhost:8000`. The local development certificate is self-signed, so a browser may display a certificate warning on first use.
 
-The application works in demo mode without a Yahoo connection, allowing the ranking interface and complete draft flow to be tested.
+No third-party Python packages are required.
 
-## Connecting Yahoo Fantasy Sports
+## Data Source
 
-Yahoo Fantasy API access requires both a Yahoo Developer application and approval for read-only Fantasy Sports API access.
+DraftLab currently uses ESPN's public, unauthenticated web statistics endpoint. This is not a formally supported developer API, so completed-season responses are cached locally for seven days and the application falls back to demo data if the endpoint becomes unavailable.
 
-1. Create an application in the [Yahoo Developer Network](https://developer.yahoo.com/apps/).
-2. Select **Fantasy Sports — Read**.
-3. Use `https://localhost:8000/auth/yahoo/callback` as the redirect URI.
-4. Apply for Fantasy Sports API access through the [Yahoo Sports Developer portal](https://sports.yahoo.com/developer/access/).
-5. Copy `.env.example` to `.env` and add the Yahoo Client ID and Client Secret.
-6. Restart the server and select **Connect Yahoo Account** in the application.
+As of October 2026, the model uses the completed 2025-26, 2024-25, and 2023-24 seasons, identified by ESPN as seasons `2026`, `2025`, and `2024`.
 
-Example configuration:
+Yahoo OAuth support remains in the codebase for future league metadata and exact player eligibility. Player rankings and the auction simulator do not depend on Yahoo approval.
 
-```env
-YAHOO_CLIENT_ID=
-YAHOO_CLIENT_SECRET=
-YAHOO_REDIRECT_URI=https://localhost:8000/auth/yahoo/callback
-YAHOO_LEAGUE_KEY=
-PORT=8000
-```
-
-Access tokens expire after approximately one hour. DraftLab stores the refresh token locally in `.data/yahoo_tokens.json` and refreshes the access token when necessary. The `.env`, `.data`, and `.cert` directories are excluded from Git and must never be committed.
-
-## Points League Model
-
-The default scoring formula follows the standard Yahoo points configuration provided for this league:
+## Points Formula
 
 ```text
 Fantasy points per game =
@@ -62,42 +45,54 @@ PTS + 1.2 × REB + 1.5 × AST + 3 × STL + 3 × BLK − TO
 
 Three-pointers do not receive an additional bonus.
 
-Before the new NBA season begins, DraftLab combines the two most recently completed Yahoo seasons. Players are matched between seasons using Yahoo's stable `player_id`:
+## Three-Season Projection
 
-- Most recently completed season: 65%
-- Previous completed season: 35%
+Players are matched between seasons using their ESPN athlete ID:
 
-### Availability and Injury Risk
+- Most recently completed season: 50%
+- Previous season: 30%
+- Third season: 20%
 
-Yahoo does not provide a complete historical injury-event archive through the Fantasy API. DraftLab therefore uses missed games as a transparent availability-risk proxy:
+Players with fewer than five games in the latest completed season are excluded from the primary draft pool. Players with only one season of NBA evidence receive a 0.72 confidence multiplier; players with two seasons receive 0.90. This keeps rookies and other small-history players from being priced like equally productive veterans until a dedicated projection source is added.
+
+## Availability and Injury Risk
+
+Because the league has no IL slots, historical availability receives a large penalty:
 
 ```text
-Weighted games played = latest season GP × 0.65 + previous season GP × 0.35
-Missed-game rate = 1 − weighted games played / 82
-Availability multiplier = 1 − 0.35 × missed-game rate
+Weighted GP = latest GP × 0.50 + previous GP × 0.30 + third GP × 0.20
+Availability = weighted GP / 82
+Projected games = 82 × (0.20 + 0.80 × availability)
+Recurrence multiplier = max(0.55, 1 − 0.60 × missed-game rate)
+Risk-adjusted season total = fantasy PPG × projected games × recurrence multiplier
 ```
 
-For example, a player who missed 30% of games receives a 10.5% draft-value discount. A current `OUT` or `INJ` designation applies an additional 10% discount, while `DTD`, `GTD`, or `Questionable` applies an additional 4% discount.
+This deliberately penalizes injury-prone players twice: fewer projected games and an additional recurrence-risk haircut. Missed games can also include rest, suspensions, or rotation decisions; a dedicated injury-history provider can later separate those cases.
 
-Missed games can include rest, suspensions, rotation decisions, or other absences in addition to injuries. A dedicated historical injury source may be added later to distinguish these cases.
+## Auction Valuation
 
-Rookies and players without historical NBA data are treated conservatively until a separate projection source is available.
+Auction values are recalculated for the configured number of teams, roster size, and budget:
 
-## Draft Recommendations
+1. A replacement baseline is estimated separately for PG, SG, SF, PF, and C.
+2. Each player's risk-adjusted projected total is compared with the relevant positional baseline.
+3. Multi-position eligibility receives a small flexibility bonus.
+4. The league's discretionary budget—total money after reserving $1 for every roster spot—is distributed in proportion to value above replacement.
+5. During the draft, recommended maximum bids adjust for the user's roster needs, remaining budget pace, marked targets, risk, and observed market inflation.
 
-After the league size and number of rounds are entered, DraftLab randomly places the user in a snake-draft order. During the real draft, selecting a player card assigns that player to the current team, removes the player from the available pool, advances the draft, and recalculates the recommendation.
+The model never recommends a bid above Yahoo's legal maximum: current budget minus $1 for every empty roster spot remaining after the purchase.
 
-The recommendation starts with the player's risk-adjusted Points League value and adds small, explainable roster-fit adjustments:
+## Yahoo-Style Salary Cap Flow
 
-- `+0.35` when the player fills a missing position after round three
-- `+0.15` for multi-position eligibility
-- `+0.12` for an active, low-risk player
+Default settings mirror Yahoo's public salary-cap draft format:
 
-Draft state is stored only in the browser's local storage.
+- $200 starting budget
+- 30-second nomination timer
+- 20-second bid timer
+- $1 minimum opening bid
+- Any bid with fewer than 10 seconds remaining resets the timer to 10 seconds
+- Nomination order rotates in a circle rather than snaking
 
-## Optional 9-Category Model
-
-The interface also retains a comparison-only 9-category model using FG%, FT%, 3PM, PTS, REB, AST, STL, BLK, and TO. It uses population z-scores, reverses turnovers, and volume-adjusts percentage categories. The primary and default model remains Points League.
+All settings can be changed before starting the simulator. Opponent bids are entered manually so the simulator can run beside the real Yahoo draft.
 
 ## Tests
 
@@ -105,8 +100,6 @@ The interface also retains a comparison-only 9-category model using FG%, FT%, 3P
 python3 -m unittest discover -s tests -v
 ```
 
-Demo statistics exist only to exercise the interface and are not presented as live data. Once an approved Yahoo account is connected, DraftLab retrieves the two most recently completed NBA seasons when the page is opened or manually refreshed.
+## Privacy
 
-## Privacy and Data Use
-
-DraftLab requests read-only Yahoo Fantasy Sports access. It does not modify leagues, submit transactions, resell Yahoo data, or share user information. Credentials and OAuth tokens remain on the user's local machine.
+Credentials, OAuth tokens, local HTTPS certificates, cached API responses, and the active auction are not committed to Git. Yahoo access, when enabled, is read-only.
