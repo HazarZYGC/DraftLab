@@ -53,6 +53,10 @@ function calculateAuctionValues() {
   const totalSurplus = rosterable.reduce((sum, entry) => sum + entry.surplus, 0) || 1;
   const discretionaryPool = teamCount * Math.max(0, budget - rosterSize);
   state.values = new Map(scored.map(entry => [entry.player.id, entry.surplus > 0 ? Math.max(1, Math.round(1 + discretionaryPool * entry.surplus / totalSurplus)) : 1]));
+  state.players.filter(player => player.projection_only).forEach(player => {
+    const yahoo = Math.max(Number(player.yahoo_average_salary || 0), Number(player.yahoo_projected_salary || 0));
+    state.values.set(player.id, Math.max(1, Math.round(yahoo * (budget / 200) * .65)));
+  });
 }
 
 function applyFilters() {
@@ -62,6 +66,7 @@ function applyFilters() {
 }
 
 function riskLabel(player) {
+  if (player.projection_only) return 'Belirsiz · yeni/veri yok';
   if (typeof player.missed_game_rate !== 'number') return 'Veri yok';
   const missed = Math.round(player.missed_game_rate * 100);
   return `${missed >= 25 ? 'Yüksek' : missed >= 12 ? 'Orta' : 'Düşük'} · %${missed}`;
@@ -74,8 +79,8 @@ function renderBoard() {
     <td class="rank-cell">${String(player.rank).padStart(2, '0')}</td>
     <td><div class="player-cell">${player.headshot ? `<img class="avatar photo" src="${player.headshot}" alt="">` : `<span class="avatar">${initials(player.name)}</span>`}<span class="player-meta"><strong>${player.name}</strong><span>${player.team} · ${riskLabel(player)}</span></span></div></td>
     <td>${player.positions.map(pos => `<span class="pos-badge">${pos}</span>`).join('')}</td>
-    <td>${fmt(player.fantasy_ppg)}</td><td>${player.expected_games || '—'}</td>
-    <td class="${player.missed_game_rate >= .2 ? 'risk-high' : ''}">%${Math.round((player.missed_game_rate || 0) * 100)}</td>
+    <td>${player.projection_only ? '—' : fmt(player.fantasy_ppg)}</td><td>${player.expected_games || '—'}</td>
+    <td class="${player.missed_game_rate >= .2 ? 'risk-high' : ''}">${typeof player.missed_game_rate === 'number' ? `%${Math.round(player.missed_game_rate * 100)}` : '—'}</td>
     <td>${Math.round(player.projected_total || player.score).toLocaleString('tr-TR')}</td>
     <td><span class="score-pill">$${state.values.get(player.id) || 1}</span></td><td>${player.yahoo_average_salary ? `$${fmt(player.yahoo_average_salary)}` : '—'}</td>
     <td><button class="target-button ${state.targets.has(player.id) ? 'active' : ''}" data-target-id="${player.id}" title="Hedef oyuncu">★</button></td></tr>`).join('');
@@ -212,17 +217,80 @@ function targetPriority(player) {
   const edge = ourValue - marketAnchor(player);
   const preference = state.targets.has(player.id) ? 14 : 0;
   const affordable = marketAnchor(player) <= maxLegalBid(state.auction.settings.myPosition) ? 0 : -1000;
-  return ourValue + edge * 1.7 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable;
+  const uncertainty = player.projection_only ? -18 : 0;
+  return ourValue + edge * 1.7 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable + uncertainty;
+}
+
+const YAHOO_ROSTER_SLOTS = ['PG', 'SG', 'G', 'SF', 'PF', 'F', 'C', 'C', 'UTIL', 'UTIL', 'BN', 'BN', 'BN'];
+
+function rosterSlots(size) {
+  if (size === 13) return [...YAHOO_ROSTER_SLOTS];
+  const core = ['PG', 'SG', 'SF', 'PF', 'C'];
+  const extras = ['G', 'F', 'C', 'UTIL', 'UTIL', 'BN', 'BN', 'BN', 'BN', 'BN', 'BN', 'BN', 'BN', 'BN', 'BN'];
+  return [...core, ...extras].slice(0, size);
+}
+
+function slotAccepts(slot, player) {
+  if (slot === 'BN' || slot === 'UTIL') return true;
+  if (slot === 'G') return player.positions.some(position => position === 'PG' || position === 'SG');
+  if (slot === 'F') return player.positions.some(position => position === 'SF' || position === 'PF');
+  return player.positions.includes(slot);
+}
+
+function takeBestSlot(player, openSlots) {
+  const preference = slot => player.positions.includes(slot) ? 0 : slot === 'G' || slot === 'F' ? 1 : slot === 'UTIL' ? 2 : 3;
+  const options = openSlots.map((slot, index) => ({ slot, index })).filter(item => slotAccepts(item.slot, player)).sort((a, b) => preference(a.slot) - preference(b.slot));
+  if (!options.length) return null;
+  const chosen = options[0]; openSlots.splice(chosen.index, 1); return chosen.slot;
+}
+
+function budgetEnvelopes(budget, count) {
+  if (!count) return [];
+  const baseWeights = [.36, .24, .14, .08, .05, .035, .025, .02, .015, .01, .008, .007, .005];
+  const weights = Array.from({ length: count }, (_, index) => baseWeights[index] || .004);
+  const discretionary = Math.max(0, budget - count); const sum = weights.reduce((total, weight) => total + weight, 0) || 1;
+  const raw = weights.map(weight => discretionary * weight / sum); const extras = raw.map(Math.floor);
+  let remainder = discretionary - extras.reduce((total, value) => total + value, 0);
+  raw.map((value, index) => ({ index, fraction: value - extras[index] })).sort((a, b) => b.fraction - a.fraction).forEach(item => {
+    if (remainder > 0) { extras[item.index] += 1; remainder -= 1; }
+  });
+  return extras.map(value => value + 1).sort((a, b) => b - a);
+}
+
+function buildIdealPlan() {
+  if (!state.auction || !state.players.length) return { acquired: [], future: [], totalCost: 0, remainingSpend: 0 };
+  const me = state.auction.teams[state.auction.settings.myPosition]; const openSlots = rosterSlots(state.auction.settings.rosterSize);
+  const acquiredPlayers = me.roster.map(id => state.players.find(player => player.id === id)).filter(Boolean).sort((a, b) => a.positions.length - b.positions.length);
+  const acquired = acquiredPlayers.map(player => {
+    const sale = state.auction.purchases.find(item => item.playerId === player.id);
+    return { player, slot: takeBestSlot(player, openSlots) || 'BN', price: sale?.price || 1, acquired: true };
+  });
+  const envelopes = budgetEnvelopes(me.budget, openSlots.length); const selected = new Set(); const future = [];
+  envelopes.forEach((envelope, index) => {
+    const candidates = availablePlayers().filter(player => !selected.has(player.id) && openSlots.some(slot => slotAccepts(slot, player)));
+    if (!candidates.length) return;
+    const fitting = candidates.filter(player => plannedTargetBid(player) <= envelope);
+    const pool = fitting.length ? fitting : candidates.filter(player => plannedTargetBid(player) <= Math.max(1, me.budget - (openSlots.length - 1)));
+    const player = [...(pool.length ? pool : candidates)].sort((a, b) => {
+      const fitA = Math.abs(envelope - plannedTargetBid(a)); const fitB = Math.abs(envelope - plannedTargetBid(b));
+      return (targetPriority(b) - fitB * .12) - (targetPriority(a) - fitA * .12);
+    })[0];
+    if (!player) return;
+    selected.add(player.id); const slot = takeBestSlot(player, openSlots);
+    const planPrice = Math.min(envelope, plannedTargetBid(player));
+    future.push({ player, slot: slot || 'BN', price: planPrice, ceiling: baseRecommendedMax(player), envelope, order: index + 1, acquired: false });
+  });
+  future.sort((a, b) => b.price - a.price || targetPriority(b.player) - targetPriority(a.player));
+  const remainingSpend = future.reduce((sum, entry) => sum + entry.price, 0);
+  return { acquired, future, totalCost: acquired.reduce((sum, entry) => sum + entry.price, 0) + remainingSpend, remainingSpend, budgetLeft: me.budget - remainingSpend };
 }
 
 function getPrimaryTarget() {
   if (!state.auction || !state.players.length) return null;
-  const available = availablePlayers();
-  const saved = available.find(player => player.id === state.auction.primaryTargetId);
+  const plan = buildIdealPlan();
+  const saved = plan.future.find(entry => entry.player.id === state.auction.primaryTargetId)?.player;
   if (saved) return saved;
-  const marked = available.filter(player => state.targets.has(player.id));
-  const pool = marked.length ? marked : available;
-  const target = [...pool].sort((a, b) => targetPriority(b) - targetPriority(a))[0] || null;
+  const target = plan.future[0]?.player || null;
   state.auction.primaryTargetId = target?.id || null;
   saveAuction();
   return target;
@@ -231,15 +299,15 @@ function getPrimaryTarget() {
 function setPrimaryTarget(id) { state.auction.primaryTargetId = id; saveAuction(); renderAuction(); }
 
 function cyclePrimaryTarget() {
-  const available = availablePlayers(); const marked = available.filter(player => state.targets.has(player.id));
-  const pool = [...(marked.length ? marked : available)].sort((a, b) => targetPriority(b) - targetPriority(a));
+  const pool = buildIdealPlan().future.map(entry => entry.player);
   const current = pool.findIndex(player => player.id === state.auction.primaryTargetId);
   state.auction.primaryTargetId = pool[(current + 1) % Math.max(1, pool.length)]?.id || null;
   saveAuction(); renderAuction();
 }
 
 function decisionFor(player) {
-  const baseMax = baseRecommendedMax(player); const target = getPrimaryTarget();
+  const baseMax = baseRecommendedMax(player); const planEntry = buildIdealPlan().future.find(entry => entry.player.id === player.id); const target = getPrimaryTarget();
+  if (planEntry) return { maxBid: Math.min(baseMax, planEntry.ceiling), target, reserveBid: planEntry.price, protectedCap: planEntry.ceiling, planEntry };
   if (!target || target.id === player.id) return { maxBid: baseMax, target, reserveBid: 0, protectedCap: baseMax };
   const myTeam = state.auction.teams[state.auction.settings.myPosition];
   const remainingAfterThis = state.auction.settings.rosterSize - myTeam.roster.length - 1;
@@ -308,12 +376,12 @@ function renderAuction() {
     const player = state.players.find(item => item.id === id); const sale = auction.purchases.find(item => item.playerId === id);
     return `<div class="roster-player"><span>${player?.name || id}</span><strong>$${sale?.price || 0}</strong></div>`;
   }).join('') : '<p class="muted-small">Henüz oyuncu almadın.</p>';
-  renderPrimaryTarget(); renderTargetList();
+  renderPrimaryTarget(); renderTargetList(); renderIdealPlan();
   $('#bidStage').classList.toggle('hidden', auction.phase !== 'sale'); $('.auction-toolbar').classList.toggle('hidden', auction.phase === 'sale');
   if (nominated) renderBidStage(nominated);
   const term = $('#auctionSearch').value.toLocaleLowerCase('tr'); const position = $('#auctionPosition').value;
   const available = availablePlayers().filter(player => player.name.toLocaleLowerCase('tr').includes(term) && (position === 'ALL' || player.positions.includes(position)));
-  $('#auctionGrid').innerHTML = auction.phase === 'nomination' ? available.slice(0, 220).map(player => `<button class="auction-player ${state.targets.has(player.id) ? 'target' : ''}" data-nominate="${player.id}"><span><strong>${player.name}</strong><small>${player.team} · ${player.positions.join('/')} · ${fmt(player.fantasy_ppg)} FPPG · Yahoo ${player.yahoo_average_salary ? `$${fmt(player.yahoo_average_salary)}` : '—'}</small></span><b>$${state.values.get(player.id) || 1}</b></button>`).join('') : '';
+  $('#auctionGrid').innerHTML = auction.phase === 'nomination' ? available.slice(0, 220).map(player => `<button class="auction-player ${state.targets.has(player.id) ? 'target' : ''}" data-nominate="${player.id}"><span><strong>${player.name}</strong><small>${player.team} · ${player.positions.join('/')} · ${player.projection_only ? 'yeni/veri yok' : `${fmt(player.fantasy_ppg)} FPPG`} · Yahoo ${player.yahoo_average_salary ? `$${fmt(player.yahoo_average_salary)}` : '—'}</small></span><b>$${state.values.get(player.id) || 1}</b></button>`).join('') : '';
   $$('[data-nominate]').forEach(button => button.addEventListener('click', () => nominatePlayer(button.dataset.nominate)));
   renderPurchaseLog();
 }
@@ -321,7 +389,8 @@ function renderAuction() {
 function renderPrimaryTarget() {
   const target = getPrimaryTarget();
   if (!target) { $('#primaryTarget').innerHTML = '<h3>Draft tamamlandı</h3>'; return; }
-  const plan = plannedTargetBid(target); const ceiling = baseRecommendedMax(target); const rivals = competitionCount(target, estimatedSalePrice(target));
+  const entry = buildIdealPlan().future.find(item => item.player.id === target.id);
+  const plan = entry?.price || plannedTargetBid(target); const ceiling = baseRecommendedMax(target); const rivals = competitionCount(target, estimatedSalePrice(target));
   $('#primaryTarget').innerHTML = `<span class="mini-label">SIRADAKİ ANA HEDEFİM</span><h3>${target.name}</h3><p>${target.positions.join('/')} · ${riskLabel(target)}</p><div class="target-price">Plan $${plan}</div><p>Mutlak tavan $${ceiling} · Yahoo Avg $${fmt(target.yahoo_average_salary || marketAnchor(target))} · Piyasa fiyatına çıkabilen ${rivals} rakip</p><button id="recalculateTarget">Sonraki hedefi göster</button>`;
   $('#recalculateTarget').addEventListener('click', cyclePrimaryTarget);
 }
@@ -335,13 +404,40 @@ function renderTargetList() {
   $$('[data-target-remove]').forEach(button => button.addEventListener('click', () => toggleTarget(button.dataset.targetRemove)));
 }
 
+function renderIdealPlan() {
+  const plan = buildIdealPlan(); const totalSlots = state.auction.settings.rosterSize;
+  $('#planBudget').textContent = `${plan.acquired.length + plan.future.length}/${totalSlots} oyuncu`;
+  $('#planSummary').textContent = plan.future.length
+    ? `Plan $${plan.remainingSpend} + fiyat esnekliği $${plan.budgetLeft} = kasa $${state.auction.teams[state.auction.settings.myPosition].budget} · Hedefler pahalıdan ucuza sıralı.`
+    : 'Kadron tamamlandı.';
+  const acquiredCards = plan.acquired.map((entry, index) => `<div class="plan-card acquired"><span class="plan-index">✓</span><div><span class="plan-slot">${entry.slot} · ALINDI</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>ödendi</small></div></div>`);
+  const futureCards = plan.future.map((entry, index) => `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${entry.player.projection_only ? 'BELİRSİZ' : 'PLAN'}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`);
+  $('#idealPlan').innerHTML = [...acquiredCards, ...futureCards].join('') || '<p class="muted-small">Plan oluşturulamadı.</p>';
+  $$('[data-plan-nominate]').forEach(button => button.addEventListener('click', () => nominatePlayer(button.dataset.planNominate)));
+}
+
+function planComparisonFor(player) {
+  const plan = buildIdealPlan(); const exactIndex = plan.future.findIndex(entry => entry.player.id === player.id);
+  if (exactIndex >= 0) return { entry: plan.future[exactIndex], exact: true, index: exactIndex + 1 };
+  const alternatives = plan.future.filter(entry => entry.player.positions.some(position => player.positions.includes(position)));
+  const entry = alternatives.sort((a, b) => b.price - a.price || targetPriority(b.player) - targetPriority(a.player))[0];
+  return entry ? { entry, exact: false, index: plan.future.indexOf(entry) + 1 } : null;
+}
+
 function renderBidStage(player) {
-  const decision = decisionFor(player); const expected = estimatedSalePrice(player); const rivals = competitionCount(player, expected);
-  $('#nominatedPlayer').innerHTML = `${player.headshot ? `<img src="${player.headshot}" alt="">` : ''}<div><span class="mini-label">ŞU AN NOMİNE EDİLEN</span><h2>${player.name}</h2><p>${player.team} · ${player.positions.join('/')} · ${fmt(player.fantasy_ppg)} FPPG · ${riskLabel(player)}</p><span class="market-price">Bizim $${state.values.get(player.id) || 1} · Yahoo Avg $${player.yahoo_average_salary ? fmt(player.yahoo_average_salary) : '—'}</span></div>`;
+  const decision = decisionFor(player); const expected = estimatedSalePrice(player); const rivals = competitionCount(player, expected); const comparison = planComparisonFor(player);
+  $('#nominatedPlayer').innerHTML = `${player.headshot ? `<img src="${player.headshot}" alt="">` : ''}<div><span class="mini-label">ŞU AN NOMİNE EDİLEN</span><h2>${player.name}</h2><p>${player.team} · ${player.positions.join('/')} · ${player.projection_only ? '3Y veri yok' : `${fmt(player.fantasy_ppg)} FPPG`} · ${riskLabel(player)}</p><span class="market-price">Bizim $${state.values.get(player.id) || 1} · Yahoo Avg $${player.yahoo_average_salary ? fmt(player.yahoo_average_salary) : '—'}</span></div>`;
   const isTarget = decision.target?.id === player.id;
-  const verdict = isTarget ? 'ANA HEDEF — takip et' : decision.maxBid >= expected ? 'Uygun fiyatta alınabilir' : 'Sadece indirimde alınır';
-  const reserve = isTarget ? `Bu ana hedefin. Planlanan satın alma fiyatı $${expected}; mutlak tavanı aşma.` : decision.target ? `Bu oyuncuda <strong>$${decision.maxBid}</strong> aşılırsa PASS. ${decision.target.name} için planlanan <strong>$${decision.reserveBid}</strong> bütçeyi ve diğer boş kadro yerleri için $1'leri koruyoruz.` : 'Kalan kadro ve minimum teklif bütçesi korunuyor.';
-  $('#bidDecision').innerHTML = `<span class="mini-label">SENİN TEKLİF TAVANIN</span><h2>$${decision.maxBid}</h2><h3>${verdict}</h3><div class="decision-prices"><div><span>BİZİM DEĞER</span><strong>$${state.values.get(player.id) || 1}</strong></div><div><span>YAHOO AVG</span><strong>${player.yahoo_average_salary ? `$${fmt(player.yahoo_average_salary)}` : '—'}</strong></div><div><span>BEKLENEN SATIŞ</span><strong>$${expected}</strong></div></div><p class="reserve-note">${reserve}<br>${rivals} rakibin bu oyuncu için beklenen fiyatı ödeyecek bütçesi var.</p>`;
+  const verdict = comparison?.exact ? `PLAN OYUNCUSU #${comparison.index} — takip et` : isTarget ? 'ANA HEDEF — takip et' : decision.maxBid >= expected ? 'Uygun fiyatta alınabilir' : 'Sadece indirimde alınır';
+  const reserve = comparison?.exact ? `Plan fiyatın <strong>$${comparison.entry.price}</strong>. Erken geldiyse de değerlendirebilirsin; <strong>$${decision.maxBid}</strong> mutlak tavan.` : isTarget ? `Bu ana hedefin. Planlanan satın alma fiyatı $${expected}; mutlak tavanı aşma.` : decision.target ? `Bu oyuncuda <strong>$${decision.maxBid}</strong> aşılırsa PASS. ${decision.target.name} için planlanan <strong>$${decision.reserveBid}</strong> bütçeyi ve diğer boş kadro yerleri için $1'leri koruyoruz.` : 'Kalan kadro ve minimum teklif bütçesi korunuyor.';
+  let comparisonHtml = '';
+  if (comparison) {
+    const planned = comparison.entry.player; const scoreDelta = Math.round((player.projected_total || player.score || 0) - (planned.projected_total || planned.score || 0));
+    comparisonHtml = comparison.exact
+      ? `<div class="plan-comparison exact"><span>13'LÜ PLANDA</span><strong>#${comparison.index} · ${comparison.entry.slot} · Plan $${comparison.entry.price}</strong><small>Bu oyuncu zaten yaşayan planın içinde. Satış başkasına giderse yerine otomatik yeni hedef gelir.</small></div>`
+      : `<div class="plan-comparison"><span>AYNI MEVKİDEKİ PLAN HEDEFİ</span><strong>${planned.name} · Plan $${comparison.entry.price}</strong><small>Nomine edilen oyuncunun 3Y risk-ayarlı toplam farkı ${scoreDelta >= 0 ? '+' : ''}${scoreDelta}. ${riskLabel(player)} ↔ ${riskLabel(planned)}</small></div>`;
+  }
+  $('#bidDecision').innerHTML = `<span class="mini-label">SENİN TEKLİF TAVANIN</span><h2>$${decision.maxBid}</h2><h3>${verdict}</h3><div class="decision-prices"><div><span>BİZİM DEĞER</span><strong>$${state.values.get(player.id) || 1}</strong></div><div><span>YAHOO AVG</span><strong>${player.yahoo_average_salary ? `$${fmt(player.yahoo_average_salary)}` : '—'}</strong></div><div><span>BEKLENEN SATIŞ</span><strong>$${expected}</strong></div></div>${comparisonHtml}<p class="reserve-note">${reserve}<br>${rivals} rakibin bu oyuncu için beklenen fiyatı ödeyecek bütçesi var.</p>`;
   $('#saleTeam').innerHTML = state.auction.teams.map((team, index) => `<option value="${index}" ${index === state.auction.settings.myPosition ? 'selected' : ''} ${team.roster.length >= state.auction.settings.rosterSize ? 'disabled' : ''}>${team.name} · $${team.budget} kaldı</option>`).join('');
   if ($('#salePrice').dataset.playerId !== player.id) {
     $('#salePrice').dataset.playerId = player.id; $('#salePrice').value = Math.max(1, Math.round(marketAnchor(player)));

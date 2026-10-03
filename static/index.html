@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=4">
+  <link rel="stylesheet" href="/styles.css?v=5">
 </head>
 <body>
   <header class="topbar">
@@ -24,7 +24,7 @@
     <section id="boardView" class="view active">
       <div class="hero">
         <div><p class="eyebrow">NBA SALARY CAP DRAFT BOARD</p><h1>Oyuncuyu değil,<br><em>doğru fiyatı seç.</em></h1><p class="hero-copy">Son üç sezon üretimi, mevki kıtlığı ve ağır erişilebilirlik cezasıyla hesaplanan Yahoo Points League değerleri.</p></div>
-        <div class="hero-score"><span class="mini-label">MODEL</span><strong>3Y</strong><span>50 / 30 / 20</span></div>
+        <div class="hero-score"><span class="mini-label">MODEL</span><strong>3Y</strong><span>55 / 30 / 15</span></div>
       </div>
       <div id="notice" class="notice hidden"></div>
       <section class="control-bar">
@@ -81,12 +81,17 @@
           </div>
           <div class="auction-toolbar"><label class="search"><span>⌕</span><input id="auctionSearch" type="search" placeholder="Nomine edilecek oyuncuyu ara…"></label><select id="auctionPosition"><option value="ALL">Tüm mevkiler</option><option>PG</option><option>SG</option><option>SF</option><option>PF</option><option>C</option></select></div>
           <div id="auctionGrid" class="auction-grid"></div>
+          <section class="plan-section">
+            <div class="board-heading"><div><span class="mini-label">YAŞAYAN DRAFT PLANI</span><h2>İdeal kadro planı</h2></div><span id="planBudget" class="player-total">0/13 oyuncu</span></div>
+            <p id="planSummary" class="plan-summary"></p>
+            <div id="idealPlan" class="plan-grid"></div>
+          </section>
           <div class="purchase-section"><div class="board-heading"><div><span class="mini-label">SATIŞ GEÇMİŞİ</span><h2>Alınan oyuncular</h2></div></div><div id="purchaseLog" class="purchase-log"></div></div>
         </div>
       </div>
     </section>
   </main>
   <div id="toast" class="toast"></div>
-  <script src="/app.js?v=4"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

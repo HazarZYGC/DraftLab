@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 ESPN_URL = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/statistics/byathlete"
 YAHOO_DRAFT_PAGE = "https://basketball.fantasysports.yahoo.com/nba/draftanalysis?type=salcap"
 YAHOO_PUBLIC_API = "https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2"
-SEASON_WEIGHTS = (0.50, 0.30, 0.20)
+SEASON_WEIGHTS = (0.55, 0.30, 0.15)
 STAT_NAMES = {
     "avgPoints": "pts", "avgRebounds": "reb", "avgAssists": "ast",
     "avgSteals": "stl", "avgBlocks": "blk", "avgTurnovers": "tov",
@@ -57,6 +57,8 @@ def parse_yahoo_salary(payload: dict) -> list[dict]:
             "name": name,
             "name_key": normalized_name(name),
             "yahoo_id": str(player.get("player_id", "")),
+            "team": player.get("editorial_team_abbr") or "FA",
+            "headshot": player.get("headshot", {}).get("url", ""),
             "yahoo_average_salary": numeric(analysis.get("average_cost") or player.get("average_auction_cost")),
             "yahoo_projected_salary": numeric(player.get("projected_auction_value")),
             "yahoo_percent_drafted": numeric(analysis.get("percent_drafted")),
@@ -77,6 +79,41 @@ def enrich_with_yahoo_salary(players: list[dict], salary_players: list[dict]) ->
             item["positions"] = salary["yahoo_positions"]
         enriched.append(item)
     return enriched
+
+
+def add_market_only_players(ranked_players: list[dict], salary_players: list[dict]) -> list[dict]:
+    """Keep new/inactive Yahoo players visible using a deliberately conservative proxy.
+
+    These players have no usable latest completed-season ESPN sample, so they are
+    never treated as equivalent to veterans with three seasons of evidence.
+    """
+    result = list(ranked_players)
+    existing = {normalized_name(player.get("name", "")) for player in result}
+    for salary in salary_players:
+        if salary["name_key"] in existing or not salary.get("yahoo_positions"):
+            continue
+        if max(salary.get("yahoo_average_salary", 0), salary.get("yahoo_projected_salary", 0)) < 1:
+            continue
+        yahoo_rank = int(salary.get("yahoo_rank") or 200)
+        proxy = ranked_players[min(max(yahoo_rank - 1, 0), len(ranked_players) - 1)] if ranked_players else {}
+        proxy_total = float(proxy.get("score", 0) or 0) * 0.65
+        result.append({
+            "id": f"yahoo-{salary.get('yahoo_id') or salary['name_key']}",
+            "name": salary["name"], "team": salary.get("team", "FA"),
+            "positions": salary["yahoo_positions"], "headshot": salary.get("headshot", ""),
+            "status": "Projection only", "injury_note": "", "stats": {}, "games": 0,
+            "availability": None, "missed_game_rate": None, "history_seasons": 0,
+            "history_confidence": 0.65, "projection_only": True,
+            "fantasy_ppg": None, "expected_games": None,
+            "projected_total": round(proxy_total, 1), "base_score": round(proxy_total, 3),
+            "score": round(proxy_total, 3), "category_scores": {}, "risk_penalty": 0,
+            **{key: value for key, value in salary.items() if key not in {"name", "name_key", "team", "headshot", "yahoo_positions"}},
+        })
+        existing.add(salary["name_key"])
+    result.sort(key=lambda player: player.get("score", 0), reverse=True)
+    for index, player in enumerate(result, start=1):
+        player["rank"] = index
+    return result
 
 
 def load_yahoo_salary(data_dir: Path, fetch_json, fetch_text, force: bool = False) -> tuple[list[dict], str]:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from espn_data import (blend_three_seasons, completed_seasons, enrich_with_yahoo_salary,
+from espn_data import (add_market_only_players, blend_three_seasons, completed_seasons, enrich_with_yahoo_salary,
                        normalized_name, numeric, parse_season, parse_yahoo_salary, yahoo_positions)
 
 
@@ -52,8 +52,8 @@ class EspnDataTests(unittest.TestCase):
             ]}]}
             seasons.append((season, parse_season(payload, season)))
         player = blend_three_seasons(seasons)[0]
-        self.assertEqual(player["stats"]["pts"], 14)
-        self.assertEqual(player["games"], 63)
+        self.assertEqual(player["stats"]["pts"], 14.75)
+        self.assertEqual(player["games"], 64)
         self.assertGreater(player["missed_game_rate"], .2)
         self.assertEqual(player["history_confidence"], 1)
 
@@ -75,6 +75,17 @@ class EspnDataTests(unittest.TestCase):
         self.assertEqual(normalized_name("Nikola Jokić"), "nikolajokic")
         self.assertEqual(players[0]["yahoo_average_salary"], 71.0)
         self.assertEqual(players[0]["yahoo_projected_salary"], 61.0)
+
+    def test_market_only_player_gets_conservative_proxy(self):
+        ranked = [{"name": "Veteran", "score": 100, "rank": 1}]
+        salaries = [{"name": "New Rookie", "name_key": "newrookie", "yahoo_id": "9", "team": "TST",
+                     "headshot": "", "yahoo_positions": ["PG"], "yahoo_average_salary": 10,
+                     "yahoo_projected_salary": 12, "yahoo_percent_drafted": 1, "yahoo_rank": 1}]
+        result = add_market_only_players(ranked, salaries)
+        rookie = next(player for player in result if player["name"] == "New Rookie")
+        self.assertTrue(rookie["projection_only"])
+        self.assertEqual(rookie["score"], 65)
+        self.assertEqual(rookie["history_confidence"], .65)
 
 
 if __name__ == "__main__":

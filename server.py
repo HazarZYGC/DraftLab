@@ -16,7 +16,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime
 from demo_data import demo_players
-from espn_data import enrich_with_yahoo_salary, load_players as load_espn_players, load_yahoo_salary
+from espn_data import add_market_only_players, enrich_with_yahoo_salary, load_players as load_espn_players, load_yahoo_salary
 from ranking import rank_players
 
 ROOT = Path(__file__).resolve().parent
@@ -326,6 +326,7 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception as error:
                     warning = f"Canlı veri alınamadı: {error}. Demo veri kullanılıyor."
                 yahoo_game_id = ""
+                salary_players = []
                 if source == "espn":
                     try:
                         salary_players, yahoo_game_id = load_yahoo_salary(DATA_DIR, request_json, request_text, force)
@@ -333,9 +334,11 @@ class Handler(SimpleHTTPRequestHandler):
                     except Exception as error:
                         warning = f"Yahoo piyasa fiyatları alınamadı: {error}. Model fiyatları kullanılacak."
                 ranked = rank_players(players, mode)
+                if salary_players:
+                    ranked = add_market_only_players(ranked, salary_players)
                 self.json_response({"players": ranked, "source": source, "warning": warning, "seasons": seasons,
                                     "market_source": "yahoo" if yahoo_game_id else "model", "yahoo_game_id": yahoo_game_id,
-                                    "model": "50/30/20 three-season blend" if seasons else "demo", "updated_at": int(time.time())})
+                                    "model": "55/30/15 three-season blend" if seasons else "demo", "updated_at": int(time.time())})
                 return
             if parsed.path == "/auth/yahoo":
                 client_id, client_secret = client_credentials()

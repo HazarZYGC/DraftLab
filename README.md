@@ -6,7 +6,7 @@ DraftLab is a lightweight NBA fantasy basketball ranking and live auction compan
 
 - Retrieves the three most recently completed NBA seasons from ESPN's public web data endpoint
 - Imports the current Yahoo Salary Cap `Avg $` and projected price from Yahoo's public draft-analysis feed without OAuth
-- Uses a 50% / 30% / 20% recency blend
+- Uses a 55% / 30% / 15% recency blend
 - Applies a deliberately strong missed-game penalty for leagues without IL slots
 - Converts ESPN's positional groups into Yahoo-style eligibility groups
 - Produces dynamic auction values based on league size, budget, roster size, position scarcity, and the remaining player pool
@@ -15,6 +15,9 @@ DraftLab is a lightweight NBA fantasy basketball ranking and live auction compan
 - Records only the winning team and final sale price when a nomination ends
 - Provides configurable nomination and bid countdowns without auto-awarding a player
 - Tracks budgets, roster space, purchases, market inflation, and the user's targets
+- Builds a living 13-player Yahoo roster plan and orders its remaining targets from expensive to cheap
+- Replaces a planned player automatically when another team buys him, then recalculates the budget and positional fit
+- Compares every nominated player with the closest same-position player in the current plan
 - Keeps a primary target and reserves enough budget for that player while evaluating other nominations
 - Recalculates maximum bids after every purchase using all teams' remaining budgets
 - Stores the active auction locally across page refreshes
@@ -51,18 +54,20 @@ Three-pointers do not receive an additional bonus.
 
 Players are matched between seasons using their ESPN athlete ID:
 
-- Most recently completed season: 50%
+- Most recently completed season: 55%
 - Previous season: 30%
-- Third season: 20%
+- Third season: 15%
 
 Players with fewer than five games in the latest completed season are excluded from the primary draft pool. Players with only one season of NBA evidence receive a 0.72 confidence multiplier; players with two seasons receive 0.90. This keeps rookies and other small-history players from being priced like equally productive veterans until a dedicated projection source is added.
+
+Players found in Yahoo's current market feed but missing from the completed-season ESPN pool remain visible as projection-only players. Their model price is capped at 65% of Yahoo's current market signal and they receive an uncertainty penalty in plan selection. This is deliberately conservative for rookies, overseas arrivals, and players returning without a usable recent NBA sample.
 
 ## Availability and Injury Risk
 
 Because the league has no IL slots, historical availability receives a large penalty:
 
 ```text
-Weighted GP = latest GP × 0.50 + previous GP × 0.30 + third GP × 0.20
+Weighted GP = latest GP × 0.55 + previous GP × 0.30 + third GP × 0.15
 Availability = weighted GP / 82
 Projected games = 82 × (0.20 + 0.80 × availability)
 Recurrence multiplier = max(0.55, 1 − 0.60 × missed-game rate)
@@ -82,6 +87,12 @@ Auction values are recalculated for the configured number of teams, roster size,
 5. Yahoo's average auction price is used as a market anchor, while the points model remains the larger part of the valuation because Yahoo averages are based on standard settings.
 6. During the draft, recommended maximum bids adjust for roster needs, remaining budget pace, injury risk, observed market inflation, and the number of opponents who can still afford the player.
 7. When another player is nominated, the maximum bid is capped again so the planned primary-target bid and $1 for every later roster opening remain protected.
+
+## Living Roster Plan
+
+For the default 13-player format, the planner fills `PG, SG, G, SF, PF, F, C, C, Util, Util, BN, BN, BN`. The remaining budget is split into descending price envelopes, so premium players are pursued before low-cost depth. Within each envelope, the model selects the best available player who fits an open slot using risk-adjusted value, positional need, Yahoo market price, and personal target stars.
+
+The plan is recalculated after every recorded sale. A player bought by an opponent disappears from the plan and is replaced by the best affordable positional alternative; a player bought by the user is moved into the acquired portion of the plan at the actual sale price.
 
 The model never recommends a bid above Yahoo's legal maximum: current budget minus $1 for every empty roster spot remaining after the purchase.
 
