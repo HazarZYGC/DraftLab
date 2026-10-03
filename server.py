@@ -280,6 +280,12 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[{self.log_date_time_string()}] {fmt % args}")
 
+    def end_headers(self):
+        if not self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+        super().end_headers()
+
     def json_response(self, payload: dict | list, status=HTTPStatus.OK):
         content = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)

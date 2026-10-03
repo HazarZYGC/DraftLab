@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=4">
 </head>
 <body>
   <header class="topbar">
@@ -46,6 +46,8 @@
           <div class="setup-grid">
             <label>Başlangıç bütçesi<input id="budgetInput" type="number" min="20" max="999" value="200"></label>
             <label>Kadro büyüklüğü<input id="rosterInput" type="number" min="5" max="20" value="13"></label>
+            <label>Nomination süresi<input id="nominationTimeInput" type="number" min="5" max="120" value="30"></label>
+            <label>Bid süresi<input id="bidTimeInput" type="number" min="5" max="120" value="20"></label>
           </div>
           <label>Sen kaçıncı sıradasın?<input id="myPositionInput" type="number" min="1" value="1"></label>
           <label>Rakip isimleri <small>(nomination sırasıyla, her satıra bir kişi)</small><textarea id="opponentNames" rows="7" placeholder="Ahmet&#10;Mehmet&#10;Can&#10;..." required></textarea></label>
@@ -55,7 +57,8 @@
 
       <div id="auctionRoom" class="auction-room hidden">
         <aside class="auction-sidebar">
-          <div class="live-head"><span class="live-dot"></span><div><span class="mini-label">AUCTION CANLI</span><h2 id="phaseLabel">Oyuncu bekleniyor</h2></div></div>
+          <div class="live-head"><span class="live-dot"></span><div><span class="mini-label">AUCTION CANLI</span><h2 id="phaseLabel">Oyuncu bekleniyor</h2></div><strong id="clock" class="clock">30</strong></div>
+          <div class="timer-actions"><button id="pauseTimer" class="pause-button">Saati durdur</button><button id="resetTimer" class="pause-button">Süreyi yenile</button></div>
           <div id="primaryTarget" class="primary-target"></div>
           <div class="my-budget"><span>Kalan bütçem</span><strong id="myBudget">$200</strong><small id="myPace">$15.38 / boş yer</small></div>
           <div class="section-title"><h3>İşaretli tercihlerim</h3><span id="targetCount">0</span></div><div id="targetList" class="target-list"></div>
@@ -84,6 +87,6 @@
     </section>
   </main>
   <div id="toast" class="toast"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=4"></script>
 </body>
 </html>

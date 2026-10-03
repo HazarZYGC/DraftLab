@@ -1,6 +1,6 @@
 const state = {
   players: [], filtered: [], position: 'ALL', auction: null, values: new Map(), marketSource: 'model',
-  targets: new Set(JSON.parse(localStorage.getItem('draftlab-targets') || '[]')),
+  targets: new Set(JSON.parse(localStorage.getItem('draftlab-targets') || '[]')), timerHandle: null,
 };
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -96,12 +96,16 @@ function startAuction() {
   const teamCount = opponents.length + 1;
   const myPosition = Math.min(teamCount, Math.max(1, Number($('#myPositionInput').value))) - 1;
   const names = [...opponents]; names.splice(myPosition, 0, 'Sen');
-  const auctionSettings = { teamCount, budget: Number($('#budgetInput').value), rosterSize: Number($('#rosterInput').value), myPosition };
+  const auctionSettings = {
+    teamCount, budget: Number($('#budgetInput').value), rosterSize: Number($('#rosterInput').value), myPosition,
+    nominationSeconds: Number($('#nominationTimeInput').value), bidSeconds: Number($('#bidTimeInput').value),
+  };
   state.auction = {
     version: 3, settings: auctionSettings, teams: names.map(name => ({ name, budget: auctionSettings.budget, roster: [] })),
-    nominatorIndex: 0, phase: 'nomination', nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [],
+    nominatorIndex: 0, phase: 'nomination', timer: auctionSettings.nominationSeconds, paused: false,
+    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [],
   };
-  calculateAuctionValues(); saveAuction(); showRoom(); renderAuction();
+  calculateAuctionValues(); saveAuction(); showRoom(); startTimer(); renderAuction();
 }
 
 function showRoom() { $('#auctionSetup').classList.add('hidden'); $('#auctionRoom').classList.remove('hidden'); }
@@ -116,7 +120,34 @@ function restoreAuction() {
     state.auction.primaryTargetId = null;
     delete state.auction.currentBids;
   }
-  if (state.auction.version === 3) { saveAuction(); showRoom(); }
+  if (state.auction.version === 3) {
+    state.auction.settings.nominationSeconds ||= 30; state.auction.settings.bidSeconds ||= 20;
+    if (!Number.isFinite(state.auction.timer)) state.auction.timer = state.auction.phase === 'sale' ? state.auction.settings.bidSeconds : state.auction.settings.nominationSeconds;
+    state.auction.paused = Boolean(state.auction.paused); saveAuction(); showRoom(); startTimer();
+  }
+}
+
+function startTimer() {
+  clearInterval(state.timerHandle);
+  state.timerHandle = setInterval(() => {
+    if (!state.auction || state.auction.paused || state.auction.timer <= 0) return;
+    state.auction.timer -= 1;
+    if (state.auction.timer <= 0) { state.auction.timer = 0; state.auction.paused = true; }
+    saveAuction(); updateClock();
+  }, 1000);
+}
+
+function updateClock() {
+  if (!state.auction) return;
+  $('#clock').textContent = state.auction.timer;
+  $('#clock').classList.toggle('urgent', state.auction.timer <= 10);
+  $('#pauseTimer').textContent = state.auction.paused ? 'Saati devam ettir' : 'Saati durdur';
+}
+
+function resetTimer() {
+  if (!state.auction) return;
+  state.auction.timer = state.auction.phase === 'sale' ? state.auction.settings.bidSeconds : state.auction.settings.nominationSeconds;
+  state.auction.paused = false; saveAuction(); updateClock();
 }
 
 function currentNominator() { return state.auction.teams[state.auction.nominatorIndex]; }
@@ -219,11 +250,13 @@ function decisionFor(player) {
 
 function nominatePlayer(playerId) {
   if (!state.auction || state.auction.phase !== 'nomination') return;
-  state.auction.phase = 'sale'; state.auction.nominatedPlayerId = playerId; saveAuction(); renderAuction();
+  state.auction.phase = 'sale'; state.auction.nominatedPlayerId = playerId;
+  state.auction.timer = state.auction.settings.bidSeconds; state.auction.paused = false; saveAuction(); renderAuction();
 }
 
 function cancelNomination() {
-  state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null; saveAuction(); renderAuction();
+  state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null;
+  state.auction.timer = state.auction.settings.nominationSeconds; state.auction.paused = false; saveAuction(); renderAuction();
 }
 
 function recordSale() {
@@ -245,6 +278,7 @@ function advanceNominator() {
     if (state.auction.teams[next].roster.length < state.auction.settings.rosterSize) break;
   }
   state.auction.nominatorIndex = next; state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null;
+  state.auction.timer = state.auction.settings.nominationSeconds; state.auction.paused = false;
 }
 
 function undoLastSale() {
@@ -253,11 +287,13 @@ function undoLastSale() {
   team.roster = team.roster.filter(id => id !== purchase.playerId);
   state.auction.drafted = state.auction.drafted.filter(id => id !== purchase.playerId);
   state.auction.nominatorIndex = purchase.nominatorIndex; state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null; state.auction.primaryTargetId = null;
+  state.auction.timer = state.auction.settings.nominationSeconds; state.auction.paused = false;
   saveAuction(); renderAuction(); toast('Son satış geri alındı.');
 }
 
 function renderAuction() {
   if (!state.auction || !state.players.length) return;
+  updateClock();
   const auction = state.auction; const me = auction.teams[auction.settings.myPosition];
   const nominated = state.players.find(player => player.id === auction.nominatedPlayerId);
   $('#draftCount').textContent = auction.drafted.length;
@@ -331,11 +367,13 @@ $('#positionFilters').addEventListener('click', event => {
 $('#searchInput').addEventListener('input', applyFilters); $('#refreshBtn').addEventListener('click', () => loadPlayers(true));
 $('#auctionSearch').addEventListener('input', renderAuction); $('#auctionPosition').addEventListener('change', renderAuction);
 $('#auctionForm').addEventListener('submit', event => { event.preventDefault(); startAuction(); });
+$('#pauseTimer').addEventListener('click', () => { state.auction.paused = !state.auction.paused; saveAuction(); updateClock(); });
+$('#resetTimer').addEventListener('click', resetTimer);
 $('#recordSale').addEventListener('click', recordSale); $('#cancelNomination').addEventListener('click', cancelNomination);
 $('#undoAuction').addEventListener('click', undoLastSale);
 $('#resetAuction').addEventListener('click', () => {
   if (!confirm('Auction geçmişi ve tüm kadrolar silinsin mi?')) return;
-  localStorage.removeItem('draftlab-auction-v2'); state.auction = null;
+  localStorage.removeItem('draftlab-auction-v2'); state.auction = null; clearInterval(state.timerHandle);
   $('#auctionRoom').classList.add('hidden'); $('#auctionSetup').classList.remove('hidden'); $('#draftCount').textContent = '0'; calculateAuctionValues(); renderBoard();
 });
 

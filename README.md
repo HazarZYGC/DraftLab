@@ -13,6 +13,7 @@ DraftLab is a lightweight NBA fantasy basketball ranking and live auction compan
 - Simulates Yahoo's circular salary-cap nomination order
 - Lets the user select the nominated player and see one clear maximum bid without recording every intermediate offer
 - Records only the winning team and final sale price when a nomination ends
+- Provides configurable nomination and bid countdowns without auto-awarding a player
 - Tracks budgets, roster space, purchases, market inflation, and the user's targets
 - Keeps a primary target and reserves enough budget for that player while evaluating other nominations
 - Recalculates maximum bids after every purchase using all teams' remaining budgets
@@ -89,10 +90,12 @@ The model never recommends a bid above Yahoo's legal maximum: current budget min
 The live companion follows Yahoo's circular nomination order and assumes its normal salary-cap constraints:
 
 - $200 starting budget
+- 30-second nomination timer by default
+- 20-second bid timer by default
 - $1 minimum opening bid
 - Nomination order rotates in a circle rather than snaking
 
-The Yahoo draft itself owns the live clock. DraftLab does not duplicate every bid: select the nominated player, follow the displayed ceiling, and enter only the winner and final price after the auction closes.
+DraftLab does not duplicate every bid: select the nominated player, follow the displayed ceiling, and enter only the winner and final price after the auction closes. The local countdown pauses at zero rather than assigning the player automatically, and both durations can be changed during setup.
 
 ## Tests
 
