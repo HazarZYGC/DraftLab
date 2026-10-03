@@ -245,7 +245,8 @@ function aiAdviceFor(player) {
 }
 
 function aiRosterRank(player) {
-  const roster = state.auction?.aiAdvice?.recommended_roster || state.auction?.aiRosterPreference || [];
+  const freshAIRoster = state.auction?.aiAdvice?.fallback_used ? null : state.auction?.aiAdvice?.recommended_roster;
+  const roster = freshAIRoster || state.auction?.aiRosterPreference || [];
   return roster.indexOf(player.id);
 }
 
@@ -510,8 +511,11 @@ async function refreshAIPlan() {
       candidates,
     };
     const advice = await api('/api/ai-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    state.auction.aiAdvice = advice; state.auction.aiRosterPreference = advice.recommended_roster; state.auction.aiResearchCompleted = true; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
-    saveAuction(); renderAuction(); toast(`AI ${advice.recommended_roster.length} oyunculuk plan oluşturdu.`);
+    state.auction.aiAdvice = advice;
+    if (!advice.fallback_used) state.auction.aiRosterPreference = advice.recommended_roster;
+    state.auction.aiResearchCompleted = true; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
+    saveAuction(); renderAuction();
+    toast(advice.fallback_used ? 'AI yanıtı yarım kaldı; sayısal plan korundu.' : `AI ${advice.recommended_roster.length} oyunculuk plan oluşturdu.`);
   } catch (error) {
     note.textContent = error.message; toast('AI planı alınamadı.');
   } finally {

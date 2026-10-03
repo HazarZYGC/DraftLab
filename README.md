@@ -54,6 +54,8 @@ When the shortlist contains projection-only players, the adviser can use OpenAI'
 
 Roster selection is explicitly the first AI task: maximize risk-adjusted points, durability, upside, and positional fit. Price adjustments are calculated only after the players are chosen, so a cheaper but clearly inferior player should not displace an affordable superior option. Web research runs only on the first successful plan for an auction; later post-sale refreshes skip repeated research for faster, more reliable replanning. If the initial web-enabled request times out or returns no structured plan, the server automatically retries once without web search.
 
+AI output is deliberately compact and receives a larger output-token allowance. If a response is still truncated or contains incomplete JSON, DraftLab retries once with stricter length limits. If both attempts fail, the endpoint returns the existing numeric roster plan instead of breaking the auction screen; the UI clearly labels that fallback and keeps any previous valid AI roster preference.
+
 ## Data Source
 
 DraftLab uses ESPN's public, unauthenticated web statistics endpoint. It also reads the same public Yahoo Salary Cap draft-analysis data that powers Yahoo's `Avg $` column. ESPN history is cached for seven days and Yahoo market prices for six hours. Neither public web endpoint is a formally supported developer API, so the application falls back to its own model values when either source is unavailable.

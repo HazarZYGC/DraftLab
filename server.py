@@ -296,22 +296,22 @@ def openai_plan(context: dict) -> dict:
     schema = {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "maxLength": 500},
+            "summary": {"type": "string", "maxLength": 350},
             "recommended_roster": {
                 "type": "array", "maxItems": 20,
                 "items": {"type": "string"},
             },
             "priorities": {
-                "type": "array", "maxItems": 30,
+                "type": "array", "maxItems": 20,
                 "items": {
                     "type": "object",
                     "properties": {
                         "player_id": {"type": "string"},
                         "priority_adjustment": {"type": "integer", "minimum": -20, "maximum": 20},
                         "bid_adjustment": {"type": "integer", "minimum": -20, "maximum": 20},
-                        "reason": {"type": "string", "maxLength": 350},
+                        "reason": {"type": "string", "maxLength": 240},
                         "sources": {
-                            "type": "array", "maxItems": 3,
+                            "type": "array", "maxItems": 2,
                             "items": {
                                 "type": "object",
                                 "properties": {"title": {"type": "string", "maxLength": 120}, "url": {"type": "string", "maxLength": 500}},
@@ -358,12 +358,13 @@ def openai_plan(context: dict) -> dict:
                 "bid_adjustment as a dollar change from numeric_ceiling between -20 and +20. Raise it only when recent production, "
                 "availability, role, and market evidence support the premium; lower it for injury risk, weak totals, uncertainty, "
                 "or an unjustified market premium. Do not invent injuries, roles, statistics, note content, or players. Return "
-                "priorities for the recommended roster plus at most five important alternatives. In each short Turkish reason, lead "
-                "with basketball production, health, role, and roster fit; mention price last. Use priority_adjustment from -20 to 20."
+                "priorities for the recommended roster plus at most three important alternatives. Keep summary under 60 words and "
+                "each Turkish reason to one sentence under 35 words. Lead with basketball production, health, role, and roster fit; "
+                "mention price last. Use priority_adjustment from -20 to 20."
         ),
         "input": json.dumps({**context, "current_date": datetime.now().date().isoformat(), "candidates": candidates}, ensure_ascii=False),
         "text": {"format": {"type": "json_schema", "name": "draft_advice", "strict": True, "schema": schema}},
-        "max_output_tokens": 4000,
+        "max_output_tokens": 7000,
     }
     if context.get("enable_web_research", True) and any(player.get("projection_only") or player.get("research_candidate") for player in candidates):
         request_body["tools"] = [{"type": "web_search", "search_context_size": "low"}]
@@ -382,20 +383,45 @@ def openai_plan(context: dict) -> dict:
                     text += content.get("text", "")
         return model_response, text
 
+    def parsed_result(text: str) -> dict | None:
+        try:
+            value = json.loads(text)
+            return value if isinstance(value, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    response, output_text = {}, ""
     try:
         response, output_text = call_model(request_body, 50 if request_body.get("tools") else 60)
-    except Exception:
-        if not request_body.get("tools"):
+    except Exception as error:
+        if isinstance(error, RuntimeError) and any(f"({code})" in str(error) for code in (400, 401, 403, 429)):
             raise
-        fallback_body = {key: value for key, value in request_body.items() if key not in {"tools", "tool_choice"}}
-        response, output_text = call_model(fallback_body, 60)
-    if not output_text and request_body.get("tools"):
-        fallback_body = {key: value for key, value in request_body.items() if key not in {"tools", "tool_choice"}}
-        response, output_text = call_model(fallback_body, 60)
-    if not output_text:
-        incomplete = response.get("incomplete_details", {}).get("reason", "bilinmeyen neden")
-        raise RuntimeError(f"OpenAI yapılandırılmış plan döndürmedi: {incomplete}.")
-    result = json.loads(output_text)
+    result = parsed_result(output_text)
+    if result is None:
+        retry_body = {key: value for key, value in request_body.items() if key not in {"tools", "tool_choice"}}
+        retry_body["instructions"] += (
+            " RETRY REQUIREMENT: The previous response was missing or incomplete. Return compact valid JSON only. "
+            "Keep every reason below 25 words and include no more than the recommended roster plus two alternatives."
+        )
+        try:
+            response, output_text = call_model(retry_body, 60)
+            result = parsed_result(output_text)
+        except Exception as error:
+            if isinstance(error, RuntimeError) and any(f"({code})" in str(error) for code in (400, 401, 403, 429)):
+                raise
+
+    fallback_used = result is None
+    if fallback_used:
+        fallback_ids = []
+        for entry in context.get("numeric_plan", []):
+            player_id = str(entry.get("id", ""))
+            if player_id in candidate_ids and player_id not in fallback_ids:
+                fallback_ids.append(player_id)
+        result = {
+            "summary": "AI yanıtı tamamlanamadığı için güvenli sayısal plan korundu. Birkaç saniye sonra AI planını tekrar çalıştırabilirsin.",
+            "recommended_roster": fallback_ids,
+            "priorities": [],
+        }
     by_id = {str(player.get("id")): player for player in candidates}
     recommended_roster = []
     for player_id in result.get("recommended_roster", []):
@@ -415,7 +441,7 @@ def openai_plan(context: dict) -> dict:
         numeric_ceiling = max(1, int(by_id[player_id].get("numeric_ceiling", 1)))
         bid_adjustment = max(-20, min(20, int(advice.get("bid_adjustment", 0))))
         sources = []
-        for source in advice.get("sources", [])[:3]:
+        for source in advice.get("sources", [])[:2]:
             url = str(source.get("url", ""))[:500]
             if urllib.parse.urlparse(url).scheme not in {"http", "https"}:
                 continue
@@ -428,9 +454,10 @@ def openai_plan(context: dict) -> dict:
             "reason": str(advice.get("reason", ""))[:350],
             "sources": sources,
         })
-    return {"summary": str(result.get("summary", ""))[:500], "recommended_roster": recommended_roster, "priorities": priorities,
+    return {"summary": str(result.get("summary", ""))[:350], "recommended_roster": recommended_roster, "priorities": priorities,
             "model": response.get("model", env("OPENAI_MODEL", "gpt-6-astra")),
-            "used_web_search": any(item.get("type") == "web_search_call" for item in response.get("output", []))}
+            "used_web_search": any(item.get("type") == "web_search_call" for item in response.get("output", [])),
+            "fallback_used": fallback_used}
 
 
 class Handler(SimpleHTTPRequestHandler):
