@@ -1,11 +1,13 @@
 const state = {
-  players: [], filtered: [], position: 'ALL', auction: null, values: new Map(), marketSource: 'model',
+  players: [], filtered: [], position: 'ALL', auction: null, values: new Map(), starTiers: new Map(), marketSource: 'model',
   targets: new Set(JSON.parse(localStorage.getItem('draftlab-targets') || '[]')), timerHandle: null,
 };
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const fmt = (value, digits = 1) => Number(value || 0).toFixed(digits);
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+const safeHttpUrl = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; } catch { return ''; } };
 const h2hPointsPerGame = stats => Number(stats?.pts || 0) + 1.2 * Number(stats?.reb || 0) + 1.5 * Number(stats?.ast || 0) + 3 * Number(stats?.stl || 0) + 3 * Number(stats?.blk || 0) - Number(stats?.tov || 0);
 const h2hHistory = player => (player.season_history || []).map(season => {
   const pointsPerGame = h2hPointsPerGame(season.stats);
@@ -62,6 +64,9 @@ function calculateAuctionValues() {
     const yahoo = Math.max(Number(player.yahoo_average_salary || 0), Number(player.yahoo_projected_salary || 0));
     state.values.set(player.id, Math.max(1, Math.round(yahoo * (budget / 200) * .65)));
   });
+  const reliable = state.players.filter(player => !player.projection_only && typeof player.missed_game_rate === 'number' && player.missed_game_rate <= .18)
+    .sort((a, b) => (state.values.get(b.id) || 0) - (state.values.get(a.id) || 0));
+  state.starTiers = new Map(reliable.slice(0, 10).map((player, index) => [player.id, index < 4 ? 1 : 2]));
 }
 
 function applyFilters() {
@@ -193,12 +198,29 @@ function rosterNeedMultiplier(player) {
   return leastCovered === 0 ? 1.07 : leastCovered === 1 ? 1.03 : 1;
 }
 
+function starCandidateTier(player) {
+  return state.starTiers.get(player.id) || 0;
+}
+
+function injuryCeilingMultiplier(player) {
+  const missed = Number(player.missed_game_rate);
+  if (!Number.isFinite(missed)) return player.projection_only ? .88 : 1;
+  if (missed >= .40) return .76;
+  if (missed >= .30) return .83;
+  if (missed >= .20) return .90;
+  if (missed >= .12) return .96;
+  return 1;
+}
+
 function baseRecommendedMax(player) {
   const ourValue = state.values.get(player.id) || 1;
   const yahooMarket = marketAnchor(player);
   let value = (ourValue * .76 + yahooMarket * .24) * marketMultiplier() * rosterNeedMultiplier(player);
   if (state.targets.has(player.id) || state.auction.primaryTargetId === player.id) value *= 1.04;
-  if ((player.missed_game_rate || 0) >= .25) value *= .95;
+  const starTier = starCandidateTier(player);
+  if (starTier === 1) value *= 1.12;
+  else if (starTier === 2) value *= 1.05;
+  value *= injuryCeilingMultiplier(player);
   const myTeam = state.auction.teams[state.auction.settings.myPosition];
   const remainingSlots = state.auction.settings.rosterSize - myTeam.roster.length;
   const spendable = Math.max(0, myTeam.budget - remainingSlots);
@@ -224,7 +246,7 @@ function aiAdviceFor(player) {
 function effectiveCeiling(player) {
   const base = baseRecommendedMax(player); const advice = aiAdviceFor(player);
   if (!advice) return base;
-  const lower = Math.max(1, Math.round(base * .72)); const upper = Math.min(maxLegalBid(state.auction.settings.myPosition), Math.max(base, Math.round(base * 1.2)));
+  const lower = Math.max(1, base - 20); const upper = Math.min(maxLegalBid(state.auction.settings.myPosition), base + 20);
   return Math.max(lower, Math.min(upper, Math.round(advice.recommended_max || base)));
 }
 
@@ -234,7 +256,7 @@ function targetPriority(player, includeAI = true) {
   const preference = state.targets.has(player.id) ? 14 : 0;
   const affordable = marketAnchor(player) <= maxLegalBid(state.auction.settings.myPosition) ? 0 : -1000;
   const uncertainty = player.projection_only ? -18 : 0;
-  const aiAdjustment = includeAI ? Number(aiAdviceFor(player)?.priority_adjustment || 0) * 3.5 : 0;
+  const aiAdjustment = includeAI ? Number(aiAdviceFor(player)?.priority_adjustment || 0) * 2 : 0;
   return ourValue * 1.15 + edge * .8 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable + uncertainty + aiAdjustment;
 }
 
@@ -263,7 +285,7 @@ function takeBestSlot(player, openSlots) {
 
 function budgetEnvelopes(budget, count) {
   if (!count) return [];
-  const baseWeights = [.36, .24, .14, .08, .05, .035, .025, .02, .015, .01, .008, .007, .005];
+  const baseWeights = [.40, .26, .11, .065, .045, .03, .022, .018, .014, .01, .008, .007, .005];
   const weights = Array.from({ length: count }, (_, index) => baseWeights[index] || .004);
   const discretionary = Math.max(0, budget - count); const sum = weights.reduce((total, weight) => total + weight, 0) || 1;
   const raw = weights.map(weight => discretionary * weight / sum); const extras = raw.map(Math.floor);
@@ -296,7 +318,7 @@ function buildIdealPlan() {
     if (!player) return;
     selected.add(player.id); const slot = takeBestSlot(player, openSlots);
     const planPrice = Math.min(effectiveCeiling(player), plannedTargetBid(player));
-    future.push({ player, slot: slot || 'BN', price: planPrice, ceiling: effectiveCeiling(player), envelope, order: index + 1, acquired: false });
+    future.push({ player, slot: slot || 'BN', price: planPrice, ceiling: effectiveCeiling(player), envelope, order: index + 1, starSlot: index < 2, acquired: false });
   });
   const reserve = future.length ? Math.max(2, Math.round(me.budget * .03)) : 0;
   const targetSpend = Math.max(future.length, me.budget - reserve);
@@ -448,7 +470,12 @@ async function refreshAIPlan() {
   button.disabled = true; button.textContent = 'AI düşünüyor…'; note.textContent = 'Sayısal kısa liste OpenAI modeline gönderiliyor.';
   try {
     const me = state.auction.teams[state.auction.settings.myPosition]; const plan = buildIdealPlan();
-    const candidates = [...availablePlayers()].sort((a, b) => targetPriority(b, false) - targetPriority(a, false)).slice(0, 45).map(player => ({
+    const available = availablePlayers();
+    const numericShortlist = [...available].sort((a, b) => targetPriority(b, false) - targetPriority(a, false)).slice(0, 36);
+    const researchShortlist = available.filter(player => player.projection_only)
+      .sort((a, b) => (Number(a.yahoo_rank || 9999) - Number(b.yahoo_rank || 9999)) || (marketAnchor(b) - marketAnchor(a))).slice(0, 9);
+    const candidatePlayers = [...numericShortlist, ...researchShortlist].filter((player, index, list) => list.findIndex(item => item.id === player.id) === index).slice(0, 45);
+    const candidates = candidatePlayers.map(player => ({
       id: player.id, name: player.name, team: player.team, positions: player.positions,
       model_value: state.values.get(player.id) || 1, yahoo_avg: Number(player.yahoo_average_salary || 0),
       expected_price: estimatedSalePrice(player), numeric_ceiling: baseRecommendedMax(player),
@@ -458,9 +485,12 @@ async function refreshAIPlan() {
       yahoo_rank: Number(player.yahoo_rank || 0), yahoo_projected_salary: Number(player.yahoo_projected_salary || 0),
       yahoo_percent_drafted: Number(player.yahoo_percent_drafted || 0), yahoo_preseason_average_salary: Number(player.yahoo_preseason_average_salary || 0),
       yahoo_note_available: Boolean(player.yahoo_has_player_note), yahoo_note_updated_at: Number(player.yahoo_note_updated_at || 0),
+      star_candidate_tier: starCandidateTier(player), research_candidate: Boolean(player.projection_only),
     }));
     const payload = {
       scoring: 'PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK - TO', season_weights: [0.55, 0.30, 0.15], no_il: true,
+      strategy: 'Kalan bütçeyi bitir; dayanıklı ve elit 1-2 yıldıza kontrollü prim ver, ardından değer seçimleri yap. Sakatlık riskini yıldızlarda dahi gevşetme.',
+      bid_adjustment_rule: 'AI numeric_ceiling değerini dolar bazında en fazla -20 veya +20 değiştirebilir.',
       h2h_history_definition: 'Tamamlanmış sezonlarda bu puanlama formülüyle hesaplanan gerçek maç başı ve toplam H2H puanı; en yeni sezon önce gelir.',
       yahoo_note_limitation: 'Yahoo not metni herkese açık veride yoktur; yalnızca notun varlığı ve son güncellenme zamanı verilmiştir, içerik çıkarımı yapılamaz.',
       roster_slots: rosterSlots(state.auction.settings.rosterSize), remaining_budget: me.budget,
@@ -489,10 +519,16 @@ function renderIdealPlan() {
   $('#aiPlanNote').textContent = aiAdvice ? `${aiAdvice.model}: ${aiAdvice.summary}` : state.auction.aiAdviceStale
     ? 'Son satıştan sonra AI önerisi eskidi. Yeniden çalıştırabilirsin.'
     : 'AI, sayısal modelin kısa listesini sakatlık, kadro dengesi ve bütçe kullanımı açısından yeniden sıralar.';
+  const sources = aiAdvice?.priorities?.flatMap(advice => advice.sources || []).filter((source, index, list) => source.url && list.findIndex(item => item.url === source.url) === index).slice(0, 8) || [];
+  $('#aiSources').innerHTML = sources.map(source => {
+    const url = safeHttpUrl(source.url); return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || 'Araştırma kaynağı')}</a>` : '';
+  }).join('');
   const acquiredCards = plan.acquired.map((entry, index) => `<div class="plan-card acquired"><span class="plan-index">✓</span><div><span class="plan-slot">${entry.slot} · ALINDI</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>ödendi</small></div></div>`);
   const futureCards = plan.future.map((entry, index) => {
     const advice = aiAdviceFor(entry.player); const reason = advice?.reason ? ` · AI: ${advice.reason}` : '';
-    return `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''} ${advice ? 'ai-ranked' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${advice ? 'AI DESTEKLİ' : entry.player.projection_only ? 'BELİRSİZ' : 'PLAN'}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}${reason}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`;
+    const adjustment = advice?.bid_adjustment ? ` · AI ${advice.bid_adjustment > 0 ? '+' : ''}$${advice.bid_adjustment}` : '';
+    const label = entry.starSlot ? 'STAR HEDEF' : advice ? 'AI DESTEKLİ' : entry.player.projection_only ? 'BELİRSİZ' : 'PLAN';
+    return `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''} ${advice ? 'ai-ranked' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${label}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}${adjustment}${reason}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`;
   });
   $('#idealPlan').innerHTML = [...acquiredCards, ...futureCards].join('') || '<p class="muted-small">Plan oluşturulamadı.</p>';
   $$('[data-plan-nominate]').forEach(button => button.addEventListener('click', () => nominatePlayer(button.dataset.planNominate)));

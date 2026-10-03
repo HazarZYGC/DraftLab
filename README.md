@@ -17,7 +17,9 @@ DraftLab is a lightweight NBA fantasy basketball ranking and live auction compan
 - Tracks budgets, roster space, purchases, market inflation, and the user's targets
 - Builds a living 13-player Yahoo roster plan and orders its remaining targets from expensive to cheap
 - Uses nearly all remaining salary-cap money in the plan while retaining a small safety reserve
-- Optionally asks an OpenAI model to re-rank the numeric shortlist and recommend bounded maximum bids
+- Optionally asks an OpenAI model to re-rank the numeric shortlist and move maximum bids by at most $20 in either direction
+- Reserves larger envelopes for one or two durable elite stars, then fills the roster with disciplined value picks
+- Lets the AI adviser research a small set of projection-only rookies or returning players when current context is needed
 - Replaces a planned player automatically when another team buys him, then recalculates the budget and positional fit
 - Compares every nominated player with the closest same-position player in the current plan
 - Keeps a primary target and reserves enough budget for that player while evaluating other nominations
@@ -46,7 +48,9 @@ OPENAI_MODEL=gpt-6-astra
 
 Restart `server.py`, then use **AI ile planı iyileştir** in the living roster plan. The API key remains on the server and is never sent to the browser. `OPENAI_MODEL` is optional.
 
-The AI layer cannot freely replace the numeric model. It receives a limited shortlist with each player's actual H2H points-per-game and total-points history under the configured scoring formula, weighted projections, availability, and Yahoo market signals. Yahoo's public feed exposes whether a player note exists and when it changed, but not the note body; DraftLab passes only that metadata and explicitly forbids the model from inventing note content. The adviser returns structured player IDs, priority adjustments, maximum bids, and short reasons. It may move a ceiling up or down when recent production, availability, and Yahoo consensus justify it, but DraftLab rejects unknown IDs, duplicate players, and bids over Yahoo's legal maximum. The local algorithm still enforces positional eligibility, the remaining roster minimums, the total budget, and a bounded range around its numeric ceiling.
+The AI layer cannot freely replace the numeric model. It receives a limited shortlist with each player's actual H2H points-per-game and total-points history under the configured scoring formula, weighted projections, availability, and Yahoo market signals. Yahoo's public feed exposes whether a player note exists and when it changed, but not the note body; DraftLab passes only that metadata and explicitly forbids the model from inventing note content. The adviser returns structured player IDs, priority adjustments, a dollar adjustment between -$20 and +$20, and short reasons. The server derives the final ceiling from that bounded adjustment and still enforces Yahoo's legal maximum.
+
+When the shortlist contains projection-only players, the adviser can use OpenAI's web-search tool for a small research set. This includes newly drafted rookies such as AJ Dybantsa as well as veterans returning without a usable completed-season sample. The prompt asks for current role, draft position, pre-NBA production, injury context, and reputable recent reporting, and requires visible source links for web-supported advice. Research is supporting evidence; uncertain roles and hype remain discounted.
 
 ## Data Source
 
@@ -75,7 +79,7 @@ Players are matched between seasons using their ESPN athlete ID:
 
 Players with fewer than five games in the latest completed season are excluded from the primary draft pool. Players with only one season of NBA evidence receive a 0.72 confidence multiplier; players with two seasons receive 0.90. This keeps rookies and other small-history players from being priced like equally productive veterans until a dedicated projection source is added.
 
-Players found in Yahoo's current market feed but missing from the completed-season ESPN pool remain visible as projection-only players. Their model price is capped at 65% of Yahoo's current market signal and they receive an uncertainty penalty in plan selection. This is deliberately conservative for rookies, overseas arrivals, and players returning without a usable recent NBA sample.
+Players found in Yahoo's current market feed but missing from the completed-season ESPN pool remain visible as projection-only players. Their initial local model price is capped at 65% of Yahoo's current market signal and they receive an uncertainty penalty in plan selection. The AI research pass may then move that price by up to $20 when current role, pre-NBA production, draft capital, injury context, and market evidence justify it. This keeps the default conservative while allowing newly drafted players to receive an evidence-backed price.
 
 ## Availability and Injury Risk
 
@@ -102,10 +106,11 @@ Auction values are recalculated for the configured number of teams, roster size,
 5. Yahoo's average auction price is used as a market anchor, while the points model remains the larger part of the valuation because Yahoo averages are based on standard settings.
 6. During the draft, recommended maximum bids adjust for roster needs, remaining budget pace, injury risk, observed market inflation, and the number of opponents who can still afford the player.
 7. When another player is nominated, the maximum bid is capped again so the planned primary-target bid and $1 for every later roster opening remain protected.
+8. The first two budget envelopes are intentionally larger. Only high-value players with an historical missed-game rate of 18% or less qualify for the full star premium; additional ceiling haircuts begin at 12% and become severe above 30-40%.
 
 ## Living Roster Plan
 
-For the default 13-player format, the planner fills `PG, SG, G, SF, PF, F, C, C, Util, Util, BN, BN, BN`. The remaining budget is split into descending price envelopes, so premium players are pursued before low-cost depth. Within each envelope, the model selects the best available player who fits an open slot using risk-adjusted value, positional need, Yahoo market price, and personal target stars. After selection, unused money is redistributed toward the strongest remaining targets up to their validated ceilings; only a small safety reserve remains unassigned.
+For the default 13-player format, the planner fills `PG, SG, G, SF, PF, F, C, C, Util, Util, BN, BN, BN`. The remaining budget is split into descending price envelopes, with the first two explicitly marked as star targets. Within each envelope, the model selects the best available player who fits an open slot using risk-adjusted value, positional need, Yahoo market price, and personal target stars. After selection, unused money is redistributed toward the strongest remaining targets up to their validated ceilings; only a small safety reserve remains unassigned.
 
 The plan is recalculated after every recorded sale. A player bought by an opponent disappears from the plan and is replaced by the best affordable positional alternative; a player bought by the user is moved into the acquired portion of the plan at the actual sale price.
 
