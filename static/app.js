@@ -525,7 +525,7 @@ function renderIdealPlan() {
   }).join('');
   const acquiredCards = plan.acquired.map((entry, index) => `<div class="plan-card acquired"><span class="plan-index">✓</span><div><span class="plan-slot">${entry.slot} · ALINDI</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>ödendi</small></div></div>`);
   const futureCards = plan.future.map((entry, index) => {
-    const advice = aiAdviceFor(entry.player); const reason = advice?.reason ? ` · AI: ${advice.reason}` : '';
+    const advice = aiAdviceFor(entry.player); const reason = advice?.reason ? ` · AI: ${escapeHtml(advice.reason)}` : '';
     const adjustment = advice?.bid_adjustment ? ` · AI ${advice.bid_adjustment > 0 ? '+' : ''}$${advice.bid_adjustment}` : '';
     const label = entry.starSlot ? 'STAR HEDEF' : advice ? 'AI DESTEKLİ' : entry.player.projection_only ? 'BELİRSİZ' : 'PLAN';
     return `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''} ${advice ? 'ai-ranked' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${label}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}${adjustment}${reason}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`;
