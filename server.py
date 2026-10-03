@@ -16,7 +16,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime
 from demo_data import demo_players
-from espn_data import load_players as load_espn_players
+from espn_data import enrich_with_yahoo_salary, load_players as load_espn_players, load_yahoo_salary
 from ranking import rank_players
 
 ROOT = Path(__file__).resolve().parent
@@ -71,8 +71,18 @@ def request_json(url: str, *, method: str = "GET", body: dict | None = None, hea
     encoded = urllib.parse.urlencode(body).encode() if body else None
     request = urllib.request.Request(url, data=encoded, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(request, timeout=25, context=OUTBOUND_SSL_CONTEXT) as response:
+        with urllib.request.urlopen(request, timeout=40, context=OUTBOUND_SSL_CONTEXT) as response:
             return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")
+        raise RuntimeError(f"Dış veri isteği başarısız ({error.code}): {detail[:300]}") from error
+
+
+def request_text(url: str, *, headers: dict | None = None) -> str:
+    request = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=OUTBOUND_SSL_CONTEXT) as response:
+            return response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors="replace")
         raise RuntimeError(f"Dış veri isteği başarısız ({error.code}): {detail[:300]}") from error
@@ -309,8 +319,16 @@ class Handler(SimpleHTTPRequestHandler):
                         players, source, warning = live_players, "espn", ""
                 except Exception as error:
                     warning = f"Canlı veri alınamadı: {error}. Demo veri kullanılıyor."
+                yahoo_game_id = ""
+                if source == "espn":
+                    try:
+                        salary_players, yahoo_game_id = load_yahoo_salary(DATA_DIR, request_json, request_text, force)
+                        players = enrich_with_yahoo_salary(players, salary_players)
+                    except Exception as error:
+                        warning = f"Yahoo piyasa fiyatları alınamadı: {error}. Model fiyatları kullanılacak."
                 ranked = rank_players(players, mode)
                 self.json_response({"players": ranked, "source": source, "warning": warning, "seasons": seasons,
+                                    "market_source": "yahoo" if yahoo_game_id else "model", "yahoo_game_id": yahoo_game_id,
                                     "model": "50/30/20 three-season blend" if seasons else "demo", "updated_at": int(time.time())})
                 return
             if parsed.path == "/auth/yahoo":

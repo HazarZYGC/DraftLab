@@ -1,15 +1,19 @@
-"""Fetch and normalize three completed NBA seasons from ESPN's public web data."""
+"""Normalize ESPN history and Yahoo's public salary-cap market data."""
 
 from __future__ import annotations
 
 import json
+import re
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
 
 ESPN_URL = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/statistics/byathlete"
+YAHOO_DRAFT_PAGE = "https://basketball.fantasysports.yahoo.com/nba/draftanalysis?type=salcap"
+YAHOO_PUBLIC_API = "https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2"
 SEASON_WEIGHTS = (0.50, 0.30, 0.20)
 STAT_NAMES = {
     "avgPoints": "pts", "avgRebounds": "reb", "avgAssists": "ast",
@@ -18,6 +22,88 @@ STAT_NAMES = {
     "freeThrowPct": "ft_pct", "avgFieldGoalsAttempted": "fga",
     "avgFreeThrowsAttempted": "fta",
 }
+
+
+def normalized_name(value: str) -> str:
+    plain = unicodedata.normalize("NFKD", value or "")
+    plain = "".join(character for character in plain if not unicodedata.combining(character))
+    parts = re.findall(r"[a-z0-9]+", plain.lower())
+    while parts and parts[-1] in {"jr", "sr", "ii", "iii", "iv"}:
+        parts.pop()
+    return "".join(parts)
+
+
+def numeric(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_yahoo_salary(payload: dict) -> list[dict]:
+    players = payload.get("fantasy_content", {}).get("league", {}).get("players", [])
+    result = []
+    for entry in players if isinstance(players, list) else []:
+        player = entry.get("player", {})
+        name = player.get("name", {}).get("full", "")
+        if not name:
+            continue
+        analysis = player.get("draft_analysis", {}) or {}
+        positions = [
+            item.get("position") for item in player.get("eligible_positions", [])
+            if item.get("position") not in {"G", "F", "Util", "BN", "IL", "IL+"}
+        ]
+        result.append({
+            "name": name,
+            "name_key": normalized_name(name),
+            "yahoo_id": str(player.get("player_id", "")),
+            "yahoo_average_salary": numeric(analysis.get("average_cost") or player.get("average_auction_cost")),
+            "yahoo_projected_salary": numeric(player.get("projected_auction_value")),
+            "yahoo_percent_drafted": numeric(analysis.get("percent_drafted")),
+            "yahoo_rank": next((int(numeric(rank.get("player_rank", {}).get("rank_value")))
+                                for rank in player.get("player_ranks", []) if numeric(rank.get("player_rank", {}).get("rank_value"))), 0),
+            "yahoo_positions": positions,
+        })
+    return result
+
+
+def enrich_with_yahoo_salary(players: list[dict], salary_players: list[dict]) -> list[dict]:
+    by_name = {player["name_key"]: player for player in salary_players}
+    enriched = []
+    for player in players:
+        salary = by_name.get(normalized_name(player.get("name", "")), {})
+        item = {**player, **{key: value for key, value in salary.items() if key != "name"}}
+        if salary.get("yahoo_positions"):
+            item["positions"] = salary["yahoo_positions"]
+        enriched.append(item)
+    return enriched
+
+
+def load_yahoo_salary(data_dir: Path, fetch_json, fetch_text, force: bool = False) -> tuple[list[dict], str]:
+    """Load the same public Avg $ data shown on Yahoo's salary-cap analysis page."""
+    data_dir.mkdir(exist_ok=True)
+    cache_file = data_dir / "yahoo_nba_salary.json"
+    fresh = cache_file.exists() and time.time() - cache_file.stat().st_mtime < 6 * 3600
+    if fresh and not force:
+        cached = json.loads(cache_file.read_text())
+        return cached.get("players", []), str(cached.get("game_id", ""))
+
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/html"}
+    page = fetch_text(YAHOO_DRAFT_PAGE, headers=headers)
+    match = re.search(r'var\s+gameId\s*=\s*"(\d+)"', page)
+    if not match:
+        raise RuntimeError("Yahoo NBA game id bulunamadı")
+    game_id = match.group(1)
+    path = (
+        f"league/{game_id}.l.public;out=settings/players;position=ALL;start=0;count=300;"
+        "sort=average_cost;search=;out=auction_values,ranks;ranks=o-rank;out=expert_ranks;"
+        "expert_ranks.rank_type=projected_season_remaining/draft_analysis;cut_types=diamond;"
+        "slices=last7days?format=json_f"
+    )
+    payload = fetch_json(f"{YAHOO_PUBLIC_API}/{path}", headers=headers)
+    players = parse_yahoo_salary(payload)
+    cache_file.write_text(json.dumps({"game_id": game_id, "players": players}))
+    return players, game_id
 
 
 def completed_seasons(now: datetime | None = None) -> list[int]:

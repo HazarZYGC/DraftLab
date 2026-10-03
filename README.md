@@ -5,16 +5,17 @@ DraftLab is a lightweight NBA fantasy basketball ranking and live auction compan
 ## What It Does
 
 - Retrieves the three most recently completed NBA seasons from ESPN's public web data endpoint
+- Imports the current Yahoo Salary Cap `Avg $` and projected price from Yahoo's public draft-analysis feed without OAuth
 - Uses a 50% / 30% / 20% recency blend
 - Applies a deliberately strong missed-game penalty for leagues without IL slots
 - Converts ESPN's positional groups into Yahoo-style eligibility groups
 - Produces dynamic auction values based on league size, budget, roster size, position scarcity, and the remaining player pool
 - Simulates Yahoo's circular salary-cap nomination order
-- Uses configurable nomination and bid timers
-- Resets the bid clock to 10 seconds when a late bid is entered
-- Lets the user manually enter every manager's real draft bid
+- Lets the user select the nominated player and see one clear maximum bid without recording every intermediate offer
+- Records only the winning team and final sale price when a nomination ends
 - Tracks budgets, roster space, purchases, market inflation, and the user's targets
-- Recalculates a recommended maximum bid after every purchase
+- Keeps a primary target and reserves enough budget for that player while evaluating other nominations
+- Recalculates maximum bids after every purchase using all teams' remaining budgets
 - Stores the active auction locally across page refreshes
 
 ## Run Locally
@@ -30,7 +31,7 @@ No third-party Python packages are required.
 
 ## Data Source
 
-DraftLab currently uses ESPN's public, unauthenticated web statistics endpoint. This is not a formally supported developer API, so completed-season responses are cached locally for seven days and the application falls back to demo data if the endpoint becomes unavailable.
+DraftLab uses ESPN's public, unauthenticated web statistics endpoint. It also reads the same public Yahoo Salary Cap draft-analysis data that powers Yahoo's `Avg $` column. ESPN history is cached for seven days and Yahoo market prices for six hours. Neither public web endpoint is a formally supported developer API, so the application falls back to its own model values when either source is unavailable.
 
 As of October 2026, the model uses the completed 2025-26, 2024-25, and 2023-24 seasons, identified by ESPN as seasons `2026`, `2025`, and `2024`.
 
@@ -77,22 +78,21 @@ Auction values are recalculated for the configured number of teams, roster size,
 2. Each player's risk-adjusted projected total is compared with the relevant positional baseline.
 3. Multi-position eligibility receives a small flexibility bonus.
 4. The league's discretionary budget—total money after reserving $1 for every roster spot—is distributed in proportion to value above replacement.
-5. During the draft, recommended maximum bids adjust for the user's roster needs, remaining budget pace, marked targets, risk, and observed market inflation.
+5. Yahoo's average auction price is used as a market anchor, while the points model remains the larger part of the valuation because Yahoo averages are based on standard settings.
+6. During the draft, recommended maximum bids adjust for roster needs, remaining budget pace, injury risk, observed market inflation, and the number of opponents who can still afford the player.
+7. When another player is nominated, the maximum bid is capped again so the planned primary-target bid and $1 for every later roster opening remain protected.
 
 The model never recommends a bid above Yahoo's legal maximum: current budget minus $1 for every empty roster spot remaining after the purchase.
 
 ## Yahoo-Style Salary Cap Flow
 
-Default settings mirror Yahoo's public salary-cap draft format:
+The live companion follows Yahoo's circular nomination order and assumes its normal salary-cap constraints:
 
 - $200 starting budget
-- 30-second nomination timer
-- 20-second bid timer
 - $1 minimum opening bid
-- Any bid with fewer than 10 seconds remaining resets the timer to 10 seconds
 - Nomination order rotates in a circle rather than snaking
 
-All settings can be changed before starting the simulator. Opponent bids are entered manually so the simulator can run beside the real Yahoo draft.
+The Yahoo draft itself owns the live clock. DraftLab does not duplicate every bid: select the nominated player, follow the displayed ceiling, and enter only the winner and final price after the auction closes.
 
 ## Tests
 

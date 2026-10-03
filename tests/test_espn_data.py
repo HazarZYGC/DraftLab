@@ -5,7 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from espn_data import blend_three_seasons, completed_seasons, parse_season, yahoo_positions
+from espn_data import (blend_three_seasons, completed_seasons, enrich_with_yahoo_salary,
+                       normalized_name, numeric, parse_season, parse_yahoo_salary, yahoo_positions)
 
 
 PAYLOAD = {
@@ -60,6 +61,20 @@ class EspnDataTests(unittest.TestCase):
         player = blend_three_seasons([(2026, parse_season(PAYLOAD, 2026))])[0]
         self.assertEqual(player["history_seasons"], 1)
         self.assertEqual(player["history_confidence"], .72)
+
+    def test_yahoo_salary_matches_accented_names(self):
+        self.assertEqual(numeric("-"), 0)
+        payload = {"fantasy_content": {"league": {"players": [{"player": {
+            "player_id": "5352", "name": {"full": "Nikola Jokić"},
+            "eligible_positions": [{"position": "C"}, {"position": "Util"}],
+            "projected_auction_value": "61", "draft_analysis": {"average_cost": "71.0", "percent_drafted": "1.0"},
+            "player_ranks": [{"player_rank": {"rank_value": "1"}}],
+        }}]}}}
+        salaries = parse_yahoo_salary(payload)
+        players = enrich_with_yahoo_salary([{"name": "Nikola Jokic", "positions": ["C"]}], salaries)
+        self.assertEqual(normalized_name("Nikola Jokić"), "nikolajokic")
+        self.assertEqual(players[0]["yahoo_average_salary"], 71.0)
+        self.assertEqual(players[0]["yahoo_projected_salary"], 61.0)
 
 
 if __name__ == "__main__":

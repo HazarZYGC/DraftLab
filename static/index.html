@@ -34,20 +34,18 @@
       </section>
       <section class="board-card">
         <div class="board-heading"><div><span class="mini-label">RİSK AYARLI SIRALAMA</span><h2>Auction değer panosu</h2></div><span id="playerTotal" class="player-total">— oyuncu</span></div>
-        <div class="table-wrap"><table><thead><tr><th>#</th><th>Oyuncu</th><th>Pos</th><th>FPPG</th><th>Proj. maç</th><th>Kaçırma</th><th>3Y toplam</th><th>Fair $</th><th>Hedef</th></tr></thead><tbody id="playerRows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>#</th><th>Oyuncu</th><th>Pos</th><th>FPPG</th><th>Proj. maç</th><th>Kaçırma</th><th>3Y toplam</th><th>Bizim $</th><th>Yahoo Avg $</th><th>Hedef</th></tr></thead><tbody id="playerRows"></tbody></table></div>
         <div id="emptyState" class="empty hidden">Bu filtreye uyan oyuncu bulunamadı.</div>
       </section>
     </section>
 
     <section id="auctionView" class="view">
       <div id="auctionSetup" class="auction-setup">
-        <div class="setup-copy"><p class="eyebrow">YAHOO SALARY CAP SİMÜLATÖRÜ</p><h1>Masayı kur.<br><em>Bütçeyi koru.</em></h1><p>Rakip isimlerini gerçek nomination sırasıyla gir. Senin sıranı ayrıca seç; gerçek drafttaki her teklifi burada elle işle.</p></div>
+        <div class="setup-copy"><p class="eyebrow">YAHOO SALARY CAP YARDIMCISI</p><h1>Masayı kur.<br><em>Kararı bize bırak.</em></h1><p>Her ara teklifi girmene gerek yok. Nomine edilen oyuncuyu seç, tavan teklifini gör; satış bitince yalnızca kazanan takım ile son fiyatı kaydet.</p></div>
         <form id="auctionForm" class="setup-card">
           <div class="setup-grid">
             <label>Başlangıç bütçesi<input id="budgetInput" type="number" min="20" max="999" value="200"></label>
             <label>Kadro büyüklüğü<input id="rosterInput" type="number" min="5" max="20" value="13"></label>
-            <label>Nomination süresi<input id="nominationTimeInput" type="number" min="10" max="120" value="30"></label>
-            <label>Bid süresi<input id="bidTimeInput" type="number" min="5" max="60" value="20"></label>
           </div>
           <label>Sen kaçıncı sıradasın?<input id="myPositionInput" type="number" min="1" value="1"></label>
           <label>Rakip isimleri <small>(nomination sırasıyla, her satıra bir kişi)</small><textarea id="opponentNames" rows="7" placeholder="Ahmet&#10;Mehmet&#10;Can&#10;..." required></textarea></label>
@@ -57,10 +55,10 @@
 
       <div id="auctionRoom" class="auction-room hidden">
         <aside class="auction-sidebar">
-          <div class="live-head"><span class="live-dot"></span><div><span class="mini-label">AUCTION CANLI</span><h2 id="phaseLabel">Nomination</h2></div><strong id="clock" class="clock">30</strong></div>
-          <button id="pauseTimer" class="pause-button">Saati durdur</button>
-          <div id="recommendation" class="recommendation"></div>
+          <div class="live-head"><span class="live-dot"></span><div><span class="mini-label">AUCTION CANLI</span><h2 id="phaseLabel">Oyuncu bekleniyor</h2></div></div>
+          <div id="primaryTarget" class="primary-target"></div>
           <div class="my-budget"><span>Kalan bütçem</span><strong id="myBudget">$200</strong><small id="myPace">$15.38 / boş yer</small></div>
+          <div class="section-title"><h3>İşaretli tercihlerim</h3><span id="targetCount">0</span></div><div id="targetList" class="target-list"></div>
           <div class="section-title"><h3>Kadrom</h3><span id="rosterCount">0/13</span></div><div id="myRoster" class="roster-list"></div>
           <div class="side-actions"><button id="undoAuction" class="text-button">Son satışı geri al</button><button id="resetAuction" class="text-button danger">Draftı sıfırla</button></div>
         </aside>
@@ -69,12 +67,13 @@
           <div class="turn-strip"><div><span id="turnCaption">Sıradaki nomination</span><strong id="currentNominator">—</strong></div><div id="teamStrip" class="team-strip"></div></div>
           <div id="bidStage" class="bid-stage hidden">
             <div id="nominatedPlayer" class="nominated-player"></div>
-            <div class="bid-console">
-              <div><span class="mini-label">LİDER TEKLİF</span><strong id="highBid">$1</strong><span id="highBidder">—</span></div>
-              <label>Teklif veren<select id="bidderSelect"></select></label>
-              <label>Teklif<input id="bidAmount" type="number" min="2"></label>
-              <div class="quick-bids"><button data-increment="1">+$1</button><button data-increment="2">+$2</button><button data-increment="5">+$5</button></div>
-              <button id="placeBid" class="primary-button">Teklifi işle</button><button id="awardNow" class="award-button">Satışı şimdi bitir</button>
+            <div id="bidDecision" class="bid-decision"></div>
+            <div class="sale-entry-card">
+              <div><span class="mini-label">NOMINATION BİTTİĞİNDE TEK SEFER GİR</span><h3>Satış sonucunu kaydet</h3></div>
+              <label>Kazanan takım<select id="saleTeam"></select></label>
+              <label>Son fiyat<input id="salePrice" type="number" min="1" value="1" inputmode="numeric"></label>
+              <button id="recordSale" class="primary-button">Satışı kaydet</button>
+              <button id="cancelNomination" class="text-button">Yanlış oyuncuyu seçtim</button>
             </div>
           </div>
           <div class="auction-toolbar"><label class="search"><span>⌕</span><input id="auctionSearch" type="search" placeholder="Nomine edilecek oyuncuyu ara…"></label><select id="auctionPosition"><option value="ALL">Tüm mevkiler</option><option>PG</option><option>SG</option><option>SF</option><option>PF</option><option>C</option></select></div>
