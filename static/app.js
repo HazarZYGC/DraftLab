@@ -7,8 +7,8 @@ const $$ = selector => [...document.querySelectorAll(selector)];
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const fmt = (value, digits = 1) => Number(value || 0).toFixed(digits);
 
-async function api(path) {
-  const response = await fetch(path, { cache: 'no-store' });
+async function api(path, options = {}) {
+  const response = await fetch(path, { cache: 'no-store', ...options });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || 'İstek başarısız');
   return payload;
@@ -108,7 +108,7 @@ function startAuction() {
   state.auction = {
     version: 3, settings: auctionSettings, teams: names.map(name => ({ name, budget: auctionSettings.budget, roster: [] })),
     nominatorIndex: 0, phase: 'nomination', timer: auctionSettings.nominationSeconds, paused: false,
-    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [],
+    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [], aiAdvice: null,
   };
   calculateAuctionValues(); saveAuction(); showRoom(); startTimer(); renderAuction();
 }
@@ -212,13 +212,25 @@ function estimatedSalePrice(player) {
 
 function plannedTargetBid(player) { return Math.min(baseRecommendedMax(player), estimatedSalePrice(player)); }
 
-function targetPriority(player) {
+function aiAdviceFor(player) {
+  return state.auction?.aiAdvice?.priorities?.find(item => item.player_id === player.id) || null;
+}
+
+function effectiveCeiling(player) {
+  const base = baseRecommendedMax(player); const advice = aiAdviceFor(player);
+  if (!advice) return base;
+  const lower = Math.max(1, Math.round(base * .72)); const upper = Math.min(maxLegalBid(state.auction.settings.myPosition), Math.max(base, Math.round(base * 1.2)));
+  return Math.max(lower, Math.min(upper, Math.round(advice.recommended_max || base)));
+}
+
+function targetPriority(player, includeAI = true) {
   const ourValue = state.values.get(player.id) || 1;
   const edge = ourValue - marketAnchor(player);
   const preference = state.targets.has(player.id) ? 14 : 0;
   const affordable = marketAnchor(player) <= maxLegalBid(state.auction.settings.myPosition) ? 0 : -1000;
   const uncertainty = player.projection_only ? -18 : 0;
-  return ourValue + edge * 1.7 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable + uncertainty;
+  const aiAdjustment = includeAI ? Number(aiAdviceFor(player)?.priority_adjustment || 0) * 3.5 : 0;
+  return ourValue * 1.15 + edge * .8 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable + uncertainty + aiAdjustment;
 }
 
 const YAHOO_ROSTER_SLOTS = ['PG', 'SG', 'G', 'SF', 'PF', 'F', 'C', 'C', 'UTIL', 'UTIL', 'BN', 'BN', 'BN'];
@@ -269,7 +281,8 @@ function buildIdealPlan() {
   envelopes.forEach((envelope, index) => {
     const candidates = availablePlayers().filter(player => !selected.has(player.id) && openSlots.some(slot => slotAccepts(slot, player)));
     if (!candidates.length) return;
-    const fitting = candidates.filter(player => plannedTargetBid(player) <= envelope);
+    const softEnvelope = envelope + Math.max(2, Math.round(envelope * .1));
+    const fitting = candidates.filter(player => plannedTargetBid(player) <= softEnvelope);
     const pool = fitting.length ? fitting : candidates.filter(player => plannedTargetBid(player) <= Math.max(1, me.budget - (openSlots.length - 1)));
     const player = [...(pool.length ? pool : candidates)].sort((a, b) => {
       const fitA = Math.abs(envelope - plannedTargetBid(a)); const fitB = Math.abs(envelope - plannedTargetBid(b));
@@ -277,12 +290,30 @@ function buildIdealPlan() {
     })[0];
     if (!player) return;
     selected.add(player.id); const slot = takeBestSlot(player, openSlots);
-    const planPrice = Math.min(envelope, plannedTargetBid(player));
-    future.push({ player, slot: slot || 'BN', price: planPrice, ceiling: baseRecommendedMax(player), envelope, order: index + 1, acquired: false });
+    const planPrice = Math.min(effectiveCeiling(player), plannedTargetBid(player));
+    future.push({ player, slot: slot || 'BN', price: planPrice, ceiling: effectiveCeiling(player), envelope, order: index + 1, acquired: false });
   });
+  const reserve = future.length ? Math.max(2, Math.round(me.budget * .03)) : 0;
+  const targetSpend = Math.max(future.length, me.budget - reserve);
+  let plannedSpend = future.reduce((sum, entry) => sum + entry.price, 0);
+  if (plannedSpend > targetSpend) {
+    [...future].sort((a, b) => a.price - b.price || targetPriority(a.player) - targetPriority(b.player)).forEach(entry => {
+      const reduction = Math.min(entry.price - 1, plannedSpend - targetSpend);
+      entry.price -= reduction; plannedSpend -= reduction;
+    });
+  }
+  let unallocated = Math.max(0, targetSpend - plannedSpend);
+  const aggressiveOrder = [...future].sort((a, b) => targetPriority(b.player) - targetPriority(a.player));
+  while (unallocated > 0 && aggressiveOrder.some(entry => entry.price < entry.ceiling)) {
+    for (const entry of aggressiveOrder) {
+      if (unallocated <= 0) break;
+      if (entry.price < entry.ceiling) { entry.price += 1; unallocated -= 1; }
+    }
+  }
   future.sort((a, b) => b.price - a.price || targetPriority(b.player) - targetPriority(a.player));
   const remainingSpend = future.reduce((sum, entry) => sum + entry.price, 0);
-  return { acquired, future, totalCost: acquired.reduce((sum, entry) => sum + entry.price, 0) + remainingSpend, remainingSpend, budgetLeft: me.budget - remainingSpend };
+  return { acquired, future, totalCost: acquired.reduce((sum, entry) => sum + entry.price, 0) + remainingSpend,
+    remainingSpend, budgetLeft: me.budget - remainingSpend, reserve };
 }
 
 function getPrimaryTarget() {
@@ -306,7 +337,7 @@ function cyclePrimaryTarget() {
 }
 
 function decisionFor(player) {
-  const baseMax = baseRecommendedMax(player); const planEntry = buildIdealPlan().future.find(entry => entry.player.id === player.id); const target = getPrimaryTarget();
+  const baseMax = effectiveCeiling(player); const planEntry = buildIdealPlan().future.find(entry => entry.player.id === player.id); const target = getPrimaryTarget();
   if (planEntry) return { maxBid: Math.min(baseMax, planEntry.ceiling), target, reserveBid: planEntry.price, protectedCap: planEntry.ceiling, planEntry };
   if (!target || target.id === player.id) return { maxBid: baseMax, target, reserveBid: 0, protectedCap: baseMax };
   const myTeam = state.auction.teams[state.auction.settings.myPosition];
@@ -336,6 +367,7 @@ function recordSale() {
   const purchase = { playerId: player.id, teamIndex, price, nominatorIndex: state.auction.nominatorIndex };
   team.budget -= price; team.roster.push(player.id); state.auction.drafted.push(player.id); state.auction.purchases.push(purchase);
   if (state.auction.primaryTargetId === player.id) state.auction.primaryTargetId = null;
+  if (state.auction.aiAdvice) { state.auction.aiAdvice = null; state.auction.aiAdviceStale = true; }
   toast(`${player.name}, ${team.name} takımına $${price}`); advanceNominator(); calculateAuctionValues(); saveAuction(); renderAuction();
 }
 
@@ -355,6 +387,7 @@ function undoLastSale() {
   team.roster = team.roster.filter(id => id !== purchase.playerId);
   state.auction.drafted = state.auction.drafted.filter(id => id !== purchase.playerId);
   state.auction.nominatorIndex = purchase.nominatorIndex; state.auction.phase = 'nomination'; state.auction.nominatedPlayerId = null; state.auction.primaryTargetId = null;
+  if (state.auction.aiAdvice) { state.auction.aiAdvice = null; state.auction.aiAdviceStale = true; }
   state.auction.timer = state.auction.settings.nominationSeconds; state.auction.paused = false;
   saveAuction(); renderAuction(); toast('Son satış geri alındı.');
 }
@@ -390,7 +423,7 @@ function renderPrimaryTarget() {
   const target = getPrimaryTarget();
   if (!target) { $('#primaryTarget').innerHTML = '<h3>Draft tamamlandı</h3>'; return; }
   const entry = buildIdealPlan().future.find(item => item.player.id === target.id);
-  const plan = entry?.price || plannedTargetBid(target); const ceiling = baseRecommendedMax(target); const rivals = competitionCount(target, estimatedSalePrice(target));
+  const plan = entry?.price || plannedTargetBid(target); const ceiling = entry?.ceiling || effectiveCeiling(target); const rivals = competitionCount(target, estimatedSalePrice(target));
   $('#primaryTarget').innerHTML = `<span class="mini-label">SIRADAKİ ANA HEDEFİM</span><h3>${target.name}</h3><p>${target.positions.join('/')} · ${riskLabel(target)}</p><div class="target-price">Plan $${plan}</div><p>Mutlak tavan $${ceiling} · Yahoo Avg $${fmt(target.yahoo_average_salary || marketAnchor(target))} · Piyasa fiyatına çıkabilen ${rivals} rakip</p><button id="recalculateTarget">Sonraki hedefi göster</button>`;
   $('#recalculateTarget').addEventListener('click', cyclePrimaryTarget);
 }
@@ -398,20 +431,59 @@ function renderPrimaryTarget() {
 function renderTargetList() {
   const targets = availablePlayers().filter(player => state.targets.has(player.id));
   $('#targetCount').textContent = `${targets.length} oyuncu`;
-  $('#targetList').innerHTML = targets.length ? targets.map(player => `<div class="target-row ${state.auction.primaryTargetId === player.id ? 'primary' : ''}"><button class="target-name" data-target-nominate="${player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span>${player.name}</span><small>${player.positions.join('/')} · Plan $${plannedTargetBid(player)} · Tavan $${baseRecommendedMax(player)}</small></button><span class="target-actions"><button class="make-primary ${state.auction.primaryTargetId === player.id ? 'active' : ''}" data-make-primary="${player.id}">ANA</button><button class="target-remove" data-target-remove="${player.id}" title="Hedeften çıkar">×</button></span></div>`).join('') : '<p class="muted-small">Board ekranındaki yıldızla kişisel tercih ekleyebilirsin.</p>';
+  $('#targetList').innerHTML = targets.length ? targets.map(player => `<div class="target-row ${state.auction.primaryTargetId === player.id ? 'primary' : ''}"><button class="target-name" data-target-nominate="${player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span>${player.name}</span><small>${player.positions.join('/')} · Plan $${plannedTargetBid(player)} · Tavan $${effectiveCeiling(player)}</small></button><span class="target-actions"><button class="make-primary ${state.auction.primaryTargetId === player.id ? 'active' : ''}" data-make-primary="${player.id}">ANA</button><button class="target-remove" data-target-remove="${player.id}" title="Hedeften çıkar">×</button></span></div>`).join('') : '<p class="muted-small">Board ekranındaki yıldızla kişisel tercih ekleyebilirsin.</p>';
   $$('[data-target-nominate]').forEach(button => button.addEventListener('click', () => nominatePlayer(button.dataset.targetNominate)));
   $$('[data-make-primary]').forEach(button => button.addEventListener('click', () => setPrimaryTarget(button.dataset.makePrimary)));
   $$('[data-target-remove]').forEach(button => button.addEventListener('click', () => toggleTarget(button.dataset.targetRemove)));
+}
+
+async function refreshAIPlan() {
+  if (!state.auction || !state.players.length) return;
+  const button = $('#aiPlanBtn'); const note = $('#aiPlanNote');
+  button.disabled = true; button.textContent = 'AI düşünüyor…'; note.textContent = 'Sayısal kısa liste OpenAI modeline gönderiliyor.';
+  try {
+    const me = state.auction.teams[state.auction.settings.myPosition]; const plan = buildIdealPlan();
+    const candidates = [...availablePlayers()].sort((a, b) => targetPriority(b, false) - targetPriority(a, false)).slice(0, 45).map(player => ({
+      id: player.id, name: player.name, team: player.team, positions: player.positions,
+      model_value: state.values.get(player.id) || 1, yahoo_avg: Number(player.yahoo_average_salary || 0),
+      expected_price: estimatedSalePrice(player), numeric_ceiling: baseRecommendedMax(player),
+      legal_max: maxLegalBid(state.auction.settings.myPosition), projected_total: Math.round(player.projected_total || player.score || 0),
+      fantasy_ppg: Number(player.fantasy_ppg || 0), expected_games: player.expected_games,
+      missed_game_rate: player.missed_game_rate, projection_only: Boolean(player.projection_only), personal_target: state.targets.has(player.id),
+    }));
+    const payload = {
+      scoring: 'PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK - TO', season_weights: [0.55, 0.30, 0.15], no_il: true,
+      roster_slots: rosterSlots(state.auction.settings.rosterSize), remaining_budget: me.budget,
+      acquired: plan.acquired.map(entry => ({ id: entry.player.id, name: entry.player.name, slot: entry.slot, price: entry.price })),
+      numeric_plan: plan.future.map(entry => ({ id: entry.player.id, name: entry.player.name, slot: entry.slot, budget: entry.price, ceiling: entry.ceiling })),
+      opponents: state.auction.teams.filter((team, index) => index !== state.auction.settings.myPosition).map(team => ({ budget: team.budget, roster_count: team.roster.length })),
+      candidates,
+    };
+    const advice = await api('/api/ai-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    state.auction.aiAdvice = advice; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
+    saveAuction(); renderAuction(); toast(`AI planı ${advice.priorities.length} oyuncuyu değerlendirdi.`);
+  } catch (error) {
+    note.textContent = error.message; toast('AI planı alınamadı.');
+  } finally {
+    button.disabled = false; button.textContent = 'AI ile planı iyileştir';
+  }
 }
 
 function renderIdealPlan() {
   const plan = buildIdealPlan(); const totalSlots = state.auction.settings.rosterSize;
   $('#planBudget').textContent = `${plan.acquired.length + plan.future.length}/${totalSlots} oyuncu`;
   $('#planSummary').textContent = plan.future.length
-    ? `Plan $${plan.remainingSpend} + fiyat esnekliği $${plan.budgetLeft} = kasa $${state.auction.teams[state.auction.settings.myPosition].budget} · Hedefler pahalıdan ucuza sıralı.`
+    ? `Plan $${plan.remainingSpend} + güvenlik payı $${plan.budgetLeft} = kasa $${state.auction.teams[state.auction.settings.myPosition].budget} · Hedefler pahalıdan ucuza sıralı.`
     : 'Kadron tamamlandı.';
+  const aiAdvice = state.auction.aiAdvice;
+  $('#aiPlanNote').textContent = aiAdvice ? `${aiAdvice.model}: ${aiAdvice.summary}` : state.auction.aiAdviceStale
+    ? 'Son satıştan sonra AI önerisi eskidi. Yeniden çalıştırabilirsin.'
+    : 'AI, sayısal modelin kısa listesini sakatlık, kadro dengesi ve bütçe kullanımı açısından yeniden sıralar.';
   const acquiredCards = plan.acquired.map((entry, index) => `<div class="plan-card acquired"><span class="plan-index">✓</span><div><span class="plan-slot">${entry.slot} · ALINDI</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>ödendi</small></div></div>`);
-  const futureCards = plan.future.map((entry, index) => `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${entry.player.projection_only ? 'BELİRSİZ' : 'PLAN'}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`);
+  const futureCards = plan.future.map((entry, index) => {
+    const advice = aiAdviceFor(entry.player); const reason = advice?.reason ? ` · AI: ${advice.reason}` : '';
+    return `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''} ${advice ? 'ai-ranked' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${advice ? 'AI DESTEKLİ' : entry.player.projection_only ? 'BELİRSİZ' : 'PLAN'}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}${reason}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`;
+  });
   $('#idealPlan').innerHTML = [...acquiredCards, ...futureCards].join('') || '<p class="muted-small">Plan oluşturulamadı.</p>';
   $$('[data-plan-nominate]').forEach(button => button.addEventListener('click', () => nominatePlayer(button.dataset.planNominate)));
 }
@@ -465,6 +537,7 @@ $('#auctionSearch').addEventListener('input', renderAuction); $('#auctionPositio
 $('#auctionForm').addEventListener('submit', event => { event.preventDefault(); startAuction(); });
 $('#pauseTimer').addEventListener('click', () => { state.auction.paused = !state.auction.paused; saveAuction(); updateClock(); });
 $('#resetTimer').addEventListener('click', resetTimer);
+$('#aiPlanBtn').addEventListener('click', refreshAIPlan);
 $('#recordSale').addEventListener('click', recordSale); $('#cancelNomination').addEventListener('click', cancelNomination);
 $('#undoAuction').addEventListener('click', undoLastSale);
 $('#resetAuction').addEventListener('click', () => {

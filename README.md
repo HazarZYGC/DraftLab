@@ -16,6 +16,8 @@ DraftLab is a lightweight NBA fantasy basketball ranking and live auction compan
 - Provides configurable nomination and bid countdowns without auto-awarding a player
 - Tracks budgets, roster space, purchases, market inflation, and the user's targets
 - Builds a living 13-player Yahoo roster plan and orders its remaining targets from expensive to cheap
+- Uses nearly all remaining salary-cap money in the plan while retaining a small safety reserve
+- Optionally asks an OpenAI model to re-rank the numeric shortlist and recommend bounded maximum bids
 - Replaces a planned player automatically when another team buys him, then recalculates the budget and positional fit
 - Compares every nominated player with the closest same-position player in the current plan
 - Keeps a primary target and reserves enough budget for that player while evaluating other nominations
@@ -32,6 +34,19 @@ python3 server.py
 Open `https://localhost:8000`. The local development certificate is self-signed, so a browser may display a certificate warning on first use.
 
 No third-party Python packages are required.
+
+### Optional AI Adviser
+
+Add an OpenAI API key to the existing local `.env` file:
+
+```text
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=gpt-6-astra
+```
+
+Restart `server.py`, then use **AI ile planı iyileştir** in the living roster plan. The API key remains on the server and is never sent to the browser. `OPENAI_MODEL` is optional.
+
+The AI layer cannot freely replace the numeric model. It only receives a limited shortlist, returns structured player IDs, priority adjustments, maximum bids, and short reasons. DraftLab rejects unknown IDs, duplicate players, and bids over Yahoo's legal maximum. The local algorithm still enforces positional eligibility, the remaining roster minimums, and the total budget.
 
 ## Data Source
 
@@ -90,7 +105,7 @@ Auction values are recalculated for the configured number of teams, roster size,
 
 ## Living Roster Plan
 
-For the default 13-player format, the planner fills `PG, SG, G, SF, PF, F, C, C, Util, Util, BN, BN, BN`. The remaining budget is split into descending price envelopes, so premium players are pursued before low-cost depth. Within each envelope, the model selects the best available player who fits an open slot using risk-adjusted value, positional need, Yahoo market price, and personal target stars.
+For the default 13-player format, the planner fills `PG, SG, G, SF, PF, F, C, C, Util, Util, BN, BN, BN`. The remaining budget is split into descending price envelopes, so premium players are pursued before low-cost depth. Within each envelope, the model selects the best available player who fits an open slot using risk-adjusted value, positional need, Yahoo market price, and personal target stars. After selection, unused money is redistributed toward the strongest remaining targets up to their validated ceilings; only a small safety reserve remains unassigned.
 
 The plan is recalculated after every recorded sale. A player bought by an opponent disappears from the plan and is replaced by the best affordable positional alternative; a player bought by the user is moved into the acquired portion of the plan at the actual sale price.
 
