@@ -118,7 +118,7 @@ function startAuction() {
   state.auction = {
     version: 3, settings: auctionSettings, teams: names.map(name => ({ name, budget: auctionSettings.budget, roster: [] })),
     nominatorIndex: 0, phase: 'nomination', timer: auctionSettings.nominationSeconds, paused: false,
-    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [], aiAdvice: null, aiRosterPreference: [],
+    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [], aiAdvice: null, aiRosterPreference: [], aiResearchCompleted: false,
   };
   calculateAuctionValues(); saveAuction(); showRoom(); startTimer(); renderAuction();
 }
@@ -137,6 +137,7 @@ function restoreAuction() {
   }
   if (state.auction.version === 3) {
     state.auction.settings.nominationSeconds ||= 30; state.auction.settings.bidSeconds ||= 20;
+    if (typeof state.auction.aiResearchCompleted !== 'boolean') state.auction.aiResearchCompleted = Boolean(state.auction.aiRosterPreference?.length);
     if (!Number.isFinite(state.auction.timer)) state.auction.timer = state.auction.phase === 'sale' ? state.auction.settings.bidSeconds : state.auction.settings.nominationSeconds;
     state.auction.paused = Boolean(state.auction.paused); saveAuction(); showRoom(); startTimer();
   }
@@ -478,9 +479,9 @@ async function refreshAIPlan() {
   try {
     const me = state.auction.teams[state.auction.settings.myPosition]; const plan = buildIdealPlan();
     const available = availablePlayers();
-    const numericShortlist = [...available].sort((a, b) => targetPriority(b, false) - targetPriority(a, false)).slice(0, 36);
+    const numericShortlist = [...available].sort((a, b) => targetPriority(b, false) - targetPriority(a, false)).slice(0, 30);
     const researchShortlist = available.filter(player => player.projection_only)
-      .sort((a, b) => (Number(a.yahoo_rank || 9999) - Number(b.yahoo_rank || 9999)) || (marketAnchor(b) - marketAnchor(a))).slice(0, 9);
+      .sort((a, b) => (Number(a.yahoo_rank || 9999) - Number(b.yahoo_rank || 9999)) || (marketAnchor(b) - marketAnchor(a))).slice(0, 7);
     const candidatePlayers = [...numericShortlist, ...researchShortlist].filter((player, index, list) => list.findIndex(item => item.id === player.id) === index).slice(0, 45);
     const candidates = candidatePlayers.map(player => ({
       id: player.id, name: player.name, team: player.team, positions: player.positions,
@@ -497,6 +498,8 @@ async function refreshAIPlan() {
     const payload = {
       scoring: 'PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK - TO', season_weights: [0.55, 0.30, 0.15], no_il: true,
       strategy: 'Kalan bütçeyi bitir; dayanıklı ve elit 1-2 yıldıza kontrollü prim ver, ardından değer seçimleri yap. Sakatlık riskini yıldızlarda dahi gevşetme.',
+      decision_order: 'Önce en güçlü ve sağlıklı kadroyu seç; fiyatı yalnızca bu kadroyu bütçeye sığdırmak için ikinci aşamada belirle.',
+      enable_web_research: !state.auction.aiResearchCompleted,
       bid_adjustment_rule: 'AI numeric_ceiling değerini dolar bazında en fazla -20 veya +20 değiştirebilir.',
       h2h_history_definition: 'Tamamlanmış sezonlarda bu puanlama formülüyle hesaplanan gerçek maç başı ve toplam H2H puanı; en yeni sezon önce gelir.',
       yahoo_note_limitation: 'Yahoo not metni herkese açık veride yoktur; yalnızca notun varlığı ve son güncellenme zamanı verilmiştir, içerik çıkarımı yapılamaz.',
@@ -507,7 +510,7 @@ async function refreshAIPlan() {
       candidates,
     };
     const advice = await api('/api/ai-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    state.auction.aiAdvice = advice; state.auction.aiRosterPreference = advice.recommended_roster; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
+    state.auction.aiAdvice = advice; state.auction.aiRosterPreference = advice.recommended_roster; state.auction.aiResearchCompleted = true; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
     saveAuction(); renderAuction(); toast(`AI ${advice.recommended_roster.length} oyunculuk plan oluşturdu.`);
   } catch (error) {
     note.textContent = error.message; toast('AI planı alınamadı.');

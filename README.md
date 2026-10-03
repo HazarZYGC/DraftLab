@@ -52,6 +52,8 @@ The AI layer receives a limited shortlist with each player's actual H2H points-p
 
 When the shortlist contains projection-only players, the adviser can use OpenAI's web-search tool for a small research set. This includes newly drafted rookies such as AJ Dybantsa as well as veterans returning without a usable completed-season sample. The prompt asks for current role, draft position, pre-NBA production, injury context, and reputable recent reporting, and requires visible source links for web-supported advice. Research is supporting evidence; uncertain roles and hype remain discounted.
 
+Roster selection is explicitly the first AI task: maximize risk-adjusted points, durability, upside, and positional fit. Price adjustments are calculated only after the players are chosen, so a cheaper but clearly inferior player should not displace an affordable superior option. Web research runs only on the first successful plan for an auction; later post-sale refreshes skip repeated research for faster, more reliable replanning. If the initial web-enabled request times out or returns no structured plan, the server automatically retries once without web search.
+
 ## Data Source
 
 DraftLab uses ESPN's public, unauthenticated web statistics endpoint. It also reads the same public Yahoo Salary Cap draft-analysis data that powers Yahoo's `Avg $` column. ESPN history is cached for seven days and Yahoo market prices for six hours. Neither public web endpoint is a formally supported developer API, so the application falls back to its own model values when either source is unavailable.
