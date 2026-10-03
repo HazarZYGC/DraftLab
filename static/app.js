@@ -118,7 +118,7 @@ function startAuction() {
   state.auction = {
     version: 3, settings: auctionSettings, teams: names.map(name => ({ name, budget: auctionSettings.budget, roster: [] })),
     nominatorIndex: 0, phase: 'nomination', timer: auctionSettings.nominationSeconds, paused: false,
-    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [], aiAdvice: null,
+    nominatedPlayerId: null, primaryTargetId: null, drafted: [], purchases: [], aiAdvice: null, aiRosterPreference: [],
   };
   calculateAuctionValues(); saveAuction(); showRoom(); startTimer(); renderAuction();
 }
@@ -243,6 +243,11 @@ function aiAdviceFor(player) {
   return state.auction?.aiAdvice?.priorities?.find(item => item.player_id === player.id) || null;
 }
 
+function aiRosterRank(player) {
+  const roster = state.auction?.aiAdvice?.recommended_roster || state.auction?.aiRosterPreference || [];
+  return roster.indexOf(player.id);
+}
+
 function effectiveCeiling(player) {
   const base = baseRecommendedMax(player); const advice = aiAdviceFor(player);
   if (!advice) return base;
@@ -257,7 +262,9 @@ function targetPriority(player, includeAI = true) {
   const affordable = marketAnchor(player) <= maxLegalBid(state.auction.settings.myPosition) ? 0 : -1000;
   const uncertainty = player.projection_only ? -18 : 0;
   const aiAdjustment = includeAI ? Number(aiAdviceFor(player)?.priority_adjustment || 0) * 2 : 0;
-  return ourValue * 1.15 + edge * .8 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable + uncertainty + aiAdjustment;
+  const rosterRank = includeAI ? aiRosterRank(player) : -1;
+  const aiRosterBoost = rosterRank >= 0 ? Math.max(45, 125 - rosterRank * 6) : 0;
+  return ourValue * 1.15 + edge * .8 + preference + (rosterNeedMultiplier(player) - 1) * 70 + affordable + uncertainty + aiAdjustment + aiRosterBoost;
 }
 
 const YAHOO_ROSTER_SLOTS = ['PG', 'SG', 'G', 'SF', 'PF', 'F', 'C', 'C', 'UTIL', 'UTIL', 'BN', 'BN', 'BN'];
@@ -493,15 +500,15 @@ async function refreshAIPlan() {
       bid_adjustment_rule: 'AI numeric_ceiling değerini dolar bazında en fazla -20 veya +20 değiştirebilir.',
       h2h_history_definition: 'Tamamlanmış sezonlarda bu puanlama formülüyle hesaplanan gerçek maç başı ve toplam H2H puanı; en yeni sezon önce gelir.',
       yahoo_note_limitation: 'Yahoo not metni herkese açık veride yoktur; yalnızca notun varlığı ve son güncellenme zamanı verilmiştir, içerik çıkarımı yapılamaz.',
-      roster_slots: rosterSlots(state.auction.settings.rosterSize), remaining_budget: me.budget,
+      roster_slots: rosterSlots(state.auction.settings.rosterSize), open_roster_slots: plan.future.map(entry => entry.slot), remaining_budget: me.budget,
       acquired: plan.acquired.map(entry => ({ id: entry.player.id, name: entry.player.name, slot: entry.slot, price: entry.price })),
       numeric_plan: plan.future.map(entry => ({ id: entry.player.id, name: entry.player.name, slot: entry.slot, budget: entry.price, ceiling: entry.ceiling })),
       opponents: state.auction.teams.filter((team, index) => index !== state.auction.settings.myPosition).map(team => ({ budget: team.budget, roster_count: team.roster.length })),
       candidates,
     };
     const advice = await api('/api/ai-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    state.auction.aiAdvice = advice; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
-    saveAuction(); renderAuction(); toast(`AI planı ${advice.priorities.length} oyuncuyu değerlendirdi.`);
+    state.auction.aiAdvice = advice; state.auction.aiRosterPreference = advice.recommended_roster; state.auction.aiAdviceStale = false; state.auction.primaryTargetId = null;
+    saveAuction(); renderAuction(); toast(`AI ${advice.recommended_roster.length} oyunculuk plan oluşturdu.`);
   } catch (error) {
     note.textContent = error.message; toast('AI planı alınamadı.');
   } finally {
@@ -527,7 +534,8 @@ function renderIdealPlan() {
   const futureCards = plan.future.map((entry, index) => {
     const advice = aiAdviceFor(entry.player); const reason = advice?.reason ? ` · AI: ${escapeHtml(advice.reason)}` : '';
     const adjustment = advice?.bid_adjustment ? ` · AI ${advice.bid_adjustment > 0 ? '+' : ''}$${advice.bid_adjustment}` : '';
-    const label = entry.starSlot ? 'STAR HEDEF' : advice ? 'AI DESTEKLİ' : entry.player.projection_only ? 'BELİRSİZ' : 'PLAN';
+    const aiPick = aiRosterRank(entry.player) >= 0;
+    const label = entry.starSlot ? `STAR HEDEF${aiPick ? ' · AI' : ''}` : aiPick ? 'AI KADROSU' : advice ? 'AI DESTEKLİ' : entry.player.projection_only ? 'BELİRSİZ' : 'PLAN';
     return `<button class="plan-card ${state.auction.primaryTargetId === entry.player.id ? 'primary' : ''} ${advice ? 'ai-ranked' : ''}" data-plan-nominate="${entry.player.id}" ${state.auction.phase !== 'nomination' ? 'disabled' : ''}><span class="plan-index">${index + 1}</span><div><span class="plan-slot">${entry.slot} · ${label}</span><strong>${entry.player.name}</strong><small>${entry.player.positions.join('/')} · ${riskLabel(entry.player)} · Yahoo ${entry.player.yahoo_average_salary ? `$${fmt(entry.player.yahoo_average_salary)}` : '—'}${adjustment}${reason}</small></div><div class="plan-money"><strong>$${entry.price}</strong><small>tavan $${entry.ceiling}</small></div></button>`;
   });
   $('#idealPlan').innerHTML = [...acquiredCards, ...futureCards].join('') || '<p class="muted-small">Plan oluşturulamadı.</p>';
