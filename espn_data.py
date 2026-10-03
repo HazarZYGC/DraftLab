@@ -62,6 +62,10 @@ def parse_yahoo_salary(payload: dict) -> list[dict]:
             "yahoo_average_salary": numeric(analysis.get("average_cost") or player.get("average_auction_cost")),
             "yahoo_projected_salary": numeric(player.get("projected_auction_value")),
             "yahoo_percent_drafted": numeric(analysis.get("percent_drafted")),
+            "yahoo_preseason_average_salary": numeric(analysis.get("preseason_average_cost")),
+            "yahoo_preseason_percent_drafted": numeric(analysis.get("preseason_percent_drafted")),
+            "yahoo_has_player_note": bool(player.get("has_player_notes")),
+            "yahoo_note_updated_at": int(numeric(player.get("player_notes_last_timestamp"))),
             "yahoo_rank": next((int(numeric(rank.get("player_rank", {}).get("rank_value")))
                                 for rank in player.get("player_ranks", []) if numeric(rank.get("player_rank", {}).get("rank_value"))), 0),
             "yahoo_positions": positions,

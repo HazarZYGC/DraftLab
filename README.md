@@ -46,7 +46,7 @@ OPENAI_MODEL=gpt-6-astra
 
 Restart `server.py`, then use **AI ile planı iyileştir** in the living roster plan. The API key remains on the server and is never sent to the browser. `OPENAI_MODEL` is optional.
 
-The AI layer cannot freely replace the numeric model. It only receives a limited shortlist, returns structured player IDs, priority adjustments, maximum bids, and short reasons. DraftLab rejects unknown IDs, duplicate players, and bids over Yahoo's legal maximum. The local algorithm still enforces positional eligibility, the remaining roster minimums, and the total budget.
+The AI layer cannot freely replace the numeric model. It receives a limited shortlist with each player's actual H2H points-per-game and total-points history under the configured scoring formula, weighted projections, availability, and Yahoo market signals. Yahoo's public feed exposes whether a player note exists and when it changed, but not the note body; DraftLab passes only that metadata and explicitly forbids the model from inventing note content. The adviser returns structured player IDs, priority adjustments, maximum bids, and short reasons. It may move a ceiling up or down when recent production, availability, and Yahoo consensus justify it, but DraftLab rejects unknown IDs, duplicate players, and bids over Yahoo's legal maximum. The local algorithm still enforces positional eligibility, the remaining roster minimums, the total budget, and a bounded range around its numeric ceiling.
 
 ## Data Source
 

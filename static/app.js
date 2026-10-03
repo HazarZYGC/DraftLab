@@ -6,6 +6,11 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const initials = name => name.split(' ').slice(0, 2).map(part => part[0]).join('');
 const fmt = (value, digits = 1) => Number(value || 0).toFixed(digits);
+const h2hPointsPerGame = stats => Number(stats?.pts || 0) + 1.2 * Number(stats?.reb || 0) + 1.5 * Number(stats?.ast || 0) + 3 * Number(stats?.stl || 0) + 3 * Number(stats?.blk || 0) - Number(stats?.tov || 0);
+const h2hHistory = player => (player.season_history || []).map(season => {
+  const pointsPerGame = h2hPointsPerGame(season.stats);
+  return { season: String(season.season), games: Number(season.games || 0), points_per_game: Number(pointsPerGame.toFixed(2)), total_points: Math.round(pointsPerGame * Number(season.games || 0)) };
+});
 
 async function api(path, options = {}) {
   const response = await fetch(path, { cache: 'no-store', ...options });
@@ -448,11 +453,16 @@ async function refreshAIPlan() {
       model_value: state.values.get(player.id) || 1, yahoo_avg: Number(player.yahoo_average_salary || 0),
       expected_price: estimatedSalePrice(player), numeric_ceiling: baseRecommendedMax(player),
       legal_max: maxLegalBid(state.auction.settings.myPosition), projected_total: Math.round(player.projected_total || player.score || 0),
-      fantasy_ppg: Number(player.fantasy_ppg || 0), expected_games: player.expected_games,
+      weighted_h2h_ppg: Number(player.fantasy_ppg || 0), actual_h2h_points_history: h2hHistory(player), expected_games: player.expected_games,
       missed_game_rate: player.missed_game_rate, projection_only: Boolean(player.projection_only), personal_target: state.targets.has(player.id),
+      yahoo_rank: Number(player.yahoo_rank || 0), yahoo_projected_salary: Number(player.yahoo_projected_salary || 0),
+      yahoo_percent_drafted: Number(player.yahoo_percent_drafted || 0), yahoo_preseason_average_salary: Number(player.yahoo_preseason_average_salary || 0),
+      yahoo_note_available: Boolean(player.yahoo_has_player_note), yahoo_note_updated_at: Number(player.yahoo_note_updated_at || 0),
     }));
     const payload = {
       scoring: 'PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK - TO', season_weights: [0.55, 0.30, 0.15], no_il: true,
+      h2h_history_definition: 'Tamamlanmış sezonlarda bu puanlama formülüyle hesaplanan gerçek maç başı ve toplam H2H puanı; en yeni sezon önce gelir.',
+      yahoo_note_limitation: 'Yahoo not metni herkese açık veride yoktur; yalnızca notun varlığı ve son güncellenme zamanı verilmiştir, içerik çıkarımı yapılamaz.',
       roster_slots: rosterSlots(state.auction.settings.rosterSize), remaining_budget: me.budget,
       acquired: plan.acquired.map(entry => ({ id: entry.player.id, name: entry.player.name, slot: entry.slot, price: entry.price })),
       numeric_plan: plan.future.map(entry => ({ id: entry.player.id, name: entry.player.name, slot: entry.slot, budget: entry.price, ceiling: entry.ceiling })),

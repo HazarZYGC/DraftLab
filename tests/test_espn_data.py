@@ -67,7 +67,8 @@ class EspnDataTests(unittest.TestCase):
         payload = {"fantasy_content": {"league": {"players": [{"player": {
             "player_id": "5352", "name": {"full": "Nikola Jokić"},
             "eligible_positions": [{"position": "C"}, {"position": "Util"}],
-            "projected_auction_value": "61", "draft_analysis": {"average_cost": "71.0", "percent_drafted": "1.0"},
+            "projected_auction_value": "61", "has_player_notes": 1, "player_notes_last_timestamp": "1729000000",
+            "draft_analysis": {"average_cost": "71.0", "percent_drafted": "1.0", "preseason_average_cost": "68.5", "preseason_percent_drafted": "0.99"},
             "player_ranks": [{"player_rank": {"rank_value": "1"}}],
         }}]}}}
         salaries = parse_yahoo_salary(payload)
@@ -75,6 +76,10 @@ class EspnDataTests(unittest.TestCase):
         self.assertEqual(normalized_name("Nikola Jokić"), "nikolajokic")
         self.assertEqual(players[0]["yahoo_average_salary"], 71.0)
         self.assertEqual(players[0]["yahoo_projected_salary"], 61.0)
+        self.assertEqual(salaries[0]["yahoo_preseason_average_salary"], 68.5)
+        self.assertEqual(salaries[0]["yahoo_preseason_percent_drafted"], .99)
+        self.assertTrue(salaries[0]["yahoo_has_player_note"])
+        self.assertEqual(salaries[0]["yahoo_note_updated_at"], 1729000000)
 
     def test_market_only_player_gets_conservative_proxy(self):
         ranked = [{"name": "Veteran", "score": 100, "rank": 1}]
